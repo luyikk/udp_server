@@ -1,11 +1,11 @@
 # udp_server
 fast rust udp server
 
+## Examples echo
 
-''' Examples
-
-  let mut a = UdpServer::new("0.0.0.0:5555").await.unwrap();
-  a.set_input(async move |peer,data|{
+```rust
+let mut a = UdpServer::new("0.0.0.0:5555").await.unwrap();
+a.set_input(async move |peer,data|{
         let mut un_peer = peer.lock().await;
         match &un_peer.token {
             Some(x)=>{
@@ -18,6 +18,6 @@ fast rust udp server
         un_peer.send(&data).await?;
         OK(())
     });    
-  a.start().await.unwrap();
+ a.start().await.unwrap();
   
-'''
+```
