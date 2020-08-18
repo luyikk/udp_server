@@ -2,7 +2,7 @@
 fast rust udp server
 
 
-'''
+''' Examples
 
   let mut a = UdpServer::new("0.0.0.0:5555").await.unwrap();
   a.set_input(async move |peer,data|{
