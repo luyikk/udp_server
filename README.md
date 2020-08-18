@@ -9,17 +9,13 @@ fast rust udp server
         match &un_peer.token {
             Some(x)=>{
                 *x.borrow_mut()+=1;
-
-            },
+                },
             None=>{
                 un_peer.token=Some(RefCell::new(1));
             }
         }
-
         un_peer.send(&data).await?;
         OK(())
-    });
-    
+    });    
   a.start().await.unwrap();
-
 '''
