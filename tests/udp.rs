@@ -2,7 +2,7 @@
 use udp_server::{Error, UdpServer};
 use std::cell::RefCell;
 use tokio::net::UdpSocket;
-
+use futures::executor::block_on;
 #[test]
 #[should_panic]
 fn test_error() {
@@ -24,9 +24,8 @@ async fn test_udp_server(){
     a.set_err_input(|peer,err|{
         match peer {
             Some(peer)=>{
-                let msg=format!("{}",err);
-                tokio::spawn(async move{
-                    println!("{:?}-{}",peer.lock().await,msg);
+                block_on(async move{
+                    println!("{:?}-{}",peer.lock().await,err);
                 });
             },
             None=>  println!("{}",err)

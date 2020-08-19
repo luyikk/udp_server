@@ -12,9 +12,11 @@ use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::{delay_for, Duration};
+use futures::executor::block_on;
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
+use futures::io::ErrorKind;
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -71,10 +73,10 @@ pub struct UdpContext<T: Send> {
 ///
 /// ```
 pub struct UdpServer<I, R, T>
-where
-    I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
-    R: Future<Output = Result<(), Box<dyn Error>>> + Send,
-    T: Send + 'static,
+    where
+        I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        R: Future<Output = Result<(), Box<dyn Error>>> + Send,
+        T: Send + 'static,
 {
     udp_contexts: Vec<UdpContext<T>>,
     input: Option<Arc<I>>,
@@ -97,24 +99,38 @@ pub struct Peer<T: Send> {
     pub udp_sock: Weak<Mutex<SendHalf>>,
 }
 
+///实现 Write for peer
+impl<T:Send> std::io::Write for Peer<T>{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let res = block_on(async move {
+            self.send(buf).await
+        })?;
+        Ok(res)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 impl<T: Send> Peer<T> {
     /// Send 发送数据包
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
-    pub async fn send(&mut self, data: &[u8]) -> Result<usize, Box<dyn Error>> {
+    pub async fn send(&mut self, data: &[u8]) -> Result<usize, std::io::Error> {
         let sock_have = self.udp_sock.upgrade();
         return match sock_have {
             Some(sock) => Ok(sock.lock().await.send_to(data, &self.addr).await?),
-            None => Err(error::Error::Logic("SendHalf is null".to_string()).into()),
+            None => Err(std::io::Error::new(ErrorKind::Other,"SendHalf is null".to_string()).into()),
         };
     }
 }
 
 impl<I, R, T> UdpServer<I, R, T>
-where
-    I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
-    R: Future<Output = Result<(), Box<dyn Error>>> + Send,
-    T: Send + 'static,
+    where
+        I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        R: Future<Output = Result<(), Box<dyn Error>>> + Send,
+        T: Send + 'static,
 {
     ///用于非windows 创建socket,和windows的区别在于开启了 reuse_port
     #[cfg(not(target_os = "windows"))]
@@ -236,14 +252,13 @@ where
                         x.clone()
                     } else {
                         Arc::new(Mutex::new(|peer:Option<Arc<Mutex<Peer<T>>>>, err:Box<dyn Error>| {
-                            let msg=format!("{}",err);
-                            tokio::spawn(async move {
+                            block_on(async move {
                                 match peer {
                                     Some(peer)=>{
-                                        println!("{}-{}",peer.lock().await.addr, msg);
+                                        println!("{}-{}",peer.lock().await.addr, err);
                                     }
                                     None=>{
-                                        println!("{}", msg);
+                                        println!("{}", err);
                                     }
                                 }
 
