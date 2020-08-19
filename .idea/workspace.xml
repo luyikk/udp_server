@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CMakeRunConfigurationManager" shouldGenerate="true" shouldDeleteObsolete="true">
+    <generated />
+  </component>
+  <component name="CMakeSettings">
+    <configurations>
+      <configuration PROFILE_NAME="Debug" CONFIG_NAME="Debug" />
+    </configurations>
+  </component>
+  <component name="CargoProjects">
+    <cargoProject FILE="$PROJECT_DIR$/Cargo.toml" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="8906b797-f5ef-49df-920b-1c356f6a818b" name="Default Changelist" comment="" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="ClangdSettings">
+    <option name="formatViaClangd" value="false" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Rust File" />
+      </list>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="MacroExpansionManager">
+    <option name="directoryName" value="vs4348j1" />
+  </component>
+  <component name="ProjectId" id="1gFm7vPp5LA22SxHcRSpHn1YJbW" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">
+    <property name="RunOnceActivity.OpenProjectViewOnStart" value="true" />
+    <property name="WebServerToolWindowFactoryState" value="true" />
+    <property name="cf.first.check.clang-format" value="false" />
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="node.js.detected.package.eslint" value="true" />
+    <property name="node.js.detected.package.tslint" value="true" />
+    <property name="node.js.path.for.package.eslint" value="project" />
+    <property name="node.js.path.for.package.tslint" value="project" />
+    <property name="node.js.selected.package.eslint" value="(autodetect)" />
+    <property name="node.js.selected.package.tslint" value="(autodetect)" />
+    <property name="nodejs_interpreter_path.stuck_in_default_project" value="undefined stuck path" />
+    <property name="nodejs_npm_path_reset_for_default_project" value="true" />
+    <property name="nodejs_package_manager_path" value="npm" />
+    <property name="org.rust.cargo.project.model.PROJECT_DISCOVERY" value="true" />
+    <property name="org.rust.disableDetachedFileInspectionC:/Users/luyik/CLionProjects/udp_server/tests/udp.rs" value="true" />
+    <property name="settings.editor.selected.configurable" value="org.jetbrains.plugins.github.ui.GithubSettingsConfigurable" />
+  </component>
+  <component name="RunAnythingCache">
+    <option name="myCommands">
+      <command value="cargo test" />
+    </option>
+  </component>
+  <component name="RunManager" selected="Cargo Command.test">
+    <configuration name="Expand udp_server" type="CargoCommandRunConfiguration" factoryName="Cargo Command" temporary="true">
+      <option name="channel" value="DEFAULT" />
+      <option name="command" value="expand --lib --color=always --theme=GitHub --tests" />
+      <option name="allFeatures" value="false" />
+      <option name="emulateTerminal" value="false" />
+      <option name="backtrace" value="SHORT" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+    <configuration name="test" type="CargoCommandRunConfiguration" factoryName="Cargo Command" temporary="true">
+      <option name="channel" value="DEFAULT" />
+      <option name="command" value="test " />
+      <option name="allFeatures" value="false" />
+      <option name="emulateTerminal" value="false" />
+      <option name="backtrace" value="SHORT" />
+      <option name="workingDirectory" value="file://$PROJECT_DIR$" />
+      <envs />
+      <method v="2">
+        <option name="CARGO.BUILD_TASK_PROVIDER" enabled="true" />
+      </method>
+    </configuration>
+    <list>
+      <item itemvalue="Cargo Command.Expand udp_server" />
+      <item itemvalue="Cargo Command.test" />
+    </list>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Cargo Command.test" />
+        <item itemvalue="Cargo Command.Expand udp_server" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="RustProjectSettings">
+    <option name="toolchainHomeDirectory" value="$USER_HOME$/.cargo/bin" />
+    <option name="version" value="2" />
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="8906b797-f5ef-49df-920b-1c356f6a818b" name="Default Changelist" comment="" />
+      <created>1597718551241</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1597718551241</updated>
+      <workItem from="1597718552847" duration="1198000" />
+      <workItem from="1597719801210" duration="18418000" />
+      <workItem from="1597742746085" duration="2613000" />
+      <workItem from="1597745407947" duration="2401000" />
+    </task>
+    <task id="LOCAL-00001" summary="add">
+      <created>1597744270288</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1597744270288</updated>
+    </task>
+    <task id="LOCAL-00002" summary="fix README.md">
+      <created>1597745498028</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1597745498028</updated>
+    </task>
+    <option name="localTasksCounter" value="3" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="add" />
+    <MESSAGE value="fix README.md" />
+    <option name="LAST_COMMIT_MESSAGE" value="fix README.md" />
+  </component>
+  <component name="WindowStateProjectService">
+    <state x="414" y="175" key="#com.intellij.execution.impl.EditConfigurationsDialog" timestamp="1597743701666">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="414" y="175" key="#com.intellij.execution.impl.EditConfigurationsDialog/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597743701666" />
+    <state x="765" y="236" key="#com.intellij.ide.util.MemberChooser" timestamp="1597719022881">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="765" y="236" key="#com.intellij.ide.util.MemberChooser/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597719022881" />
+    <state x="498" y="87" key="CommitChangelistDialog2" timestamp="1597745497491">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="498" y="87" key="CommitChangelistDialog2/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745497491" />
+    <state x="740" y="275" key="FileChooserDialogImpl" timestamp="1597745285783">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="740" y="275" key="FileChooserDialogImpl/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745285783" />
+    <state x="827" y="417" width="266" height="280" key="Github.ShareDialog" timestamp="1597742796840">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="827" y="417" width="266" height="280" key="Github.ShareDialog/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742796840" />
+    <state x="760" y="217" key="Github.UntrackedFilesDialog" timestamp="1597742824396">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="760" y="217" key="Github.UntrackedFilesDialog/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742824396" />
+    <state width="1877" height="389" key="GridCell.Tab.0.bottom" timestamp="1597745528355">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="389" key="GridCell.Tab.0.bottom/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745528355" />
+    <state width="1877" height="389" key="GridCell.Tab.0.center" timestamp="1597745528355">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="389" key="GridCell.Tab.0.center/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745528355" />
+    <state width="1877" height="389" key="GridCell.Tab.0.left" timestamp="1597745528355">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="389" key="GridCell.Tab.0.left/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745528355" />
+    <state width="1877" height="389" key="GridCell.Tab.0.right" timestamp="1597745528355">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="389" key="GridCell.Tab.0.right/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745528355" />
+    <state width="1877" height="348" key="GridCell.Tab.1.bottom" timestamp="1597742685552">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="348" key="GridCell.Tab.1.bottom/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742685552" />
+    <state width="1877" height="348" key="GridCell.Tab.1.center" timestamp="1597742685552">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="348" key="GridCell.Tab.1.center/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742685552" />
+    <state width="1877" height="348" key="GridCell.Tab.1.left" timestamp="1597742685551">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="348" key="GridCell.Tab.1.left/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742685551" />
+    <state width="1877" height="348" key="GridCell.Tab.1.right" timestamp="1597742685552">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state width="1877" height="348" key="GridCell.Tab.1.right/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742685552" />
+    <state x="461" y="164" key="SettingsEditor" timestamp="1597742609263">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="461" y="164" key="SettingsEditor/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742609263" />
+    <state x="552" y="253" key="Vcs.Push.Dialog.v2" timestamp="1597745499052">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="552" y="253" key="Vcs.Push.Dialog.v2/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597745499052" />
+    <state x="763" y="433" key="com.intellij.openapi.vcs.update.UpdateOrStatusOptionsDialogupdate-v2" timestamp="1597744242197">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="763" y="433" key="com.intellij.openapi.vcs.update.UpdateOrStatusOptionsDialogupdate-v2/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597744242197" />
+    <state x="761" y="426" key="git4idea.remote.GitConfigureRemotesDialog" timestamp="1597742564520">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="761" y="426" key="git4idea.remote.GitConfigureRemotesDialog/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597742564520" />
+    <state x="616" y="240" width="672" height="677" key="run.anything.popup" timestamp="1597718637099">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="616" y="240" width="672" height="677" key="run.anything.popup/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597718637099" />
+    <state x="623" y="225" width="672" height="678" key="search.everywhere.popup" timestamp="1597724876803">
+      <screen x="0" y="0" width="1920" height="1040" />
+    </state>
+    <state x="623" y="225" width="672" height="678" key="search.everywhere.popup/0.0.1920.1040/1920.0.1920.1040@0.0.1920.1040" timestamp="1597724876803" />
+  </component>
+</project>
