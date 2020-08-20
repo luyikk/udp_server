@@ -41,12 +41,14 @@ pub struct UdpContext<T: Send> {
 /// #![feature(async_closure)]
 /// use udp_server::UdpServer;
 /// use std::cell::RefCell;
+/// use tokio::net::UdpSocket;
+/// use std::sync::Arc;
+/// use tokio::sync::Mutex;
 ///
 /// #[tokio::main]
 /// async fn main() {
-///    use tokio::net::UdpSocket;
-///    let mut a = UdpServer::new("0.0.0.0:5555").await.unwrap();
-///    a.set_input(async move |peer,data|{
+///    let mut a = UdpServer::new("127.0.0.1:5555").await.unwrap();
+///    a.set_input(async move |_,peer,data|{
 ///         let mut un_peer = peer.lock().await;
 ///         match &un_peer.token {
 ///             Some(x)=>{
@@ -72,12 +74,14 @@ pub struct UdpContext<T: Send> {
 ///
 ///
 /// ```
-pub struct UdpServer<I, R, T>
+pub struct UdpServer<I, R, T,S>
     where
-        I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
-        R: Future<Output = Result<(), Box<dyn Error>>> + Send,
+        I: Fn(Weak<Mutex<S>>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        R: Future<Output = Result<(), Box<dyn Error>>>,
         T: Send + 'static,
+        S: Send +'static
 {
+    inner:Arc<Mutex<S>>,
     udp_contexts: Vec<UdpContext<T>>,
     input: Option<Arc<I>>,
     error_input: Option<Arc<Mutex<dyn Fn(Option<Arc<Mutex<Peer<T>>>>, Box<dyn Error>)->bool + Send>>>,
@@ -126,12 +130,22 @@ impl<T: Send> Peer<T> {
     }
 }
 
-impl<I, R, T> UdpServer<I, R, T>
+impl <I,R,T> UdpServer<I,R,T,()>  where
+    I: Fn(Weak<Mutex<()>>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<(), Box<dyn Error>>> + Send,
+    T: Send + 'static{
+
+    pub async fn new<A: ToSocketAddrs>(addr:A)->Result<Self, Box<dyn Error>> {
+        Self::new_inner(addr,Arc::new(Mutex::new(()))).await
+    }
+}
+
+impl<I, R, T, S> UdpServer<I, R, T, S>
     where
-        I: Fn(Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        I: Fn(Weak<Mutex<S>>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Box<dyn Error>>> + Send,
         T: Send + 'static,
-{
+        S: Send+'static{
     ///用于非windows 创建socket,和windows的区别在于开启了 reuse_port
     #[cfg(not(target_os = "windows"))]
     fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> Result<std::net::UdpSocket, Box<dyn Error>> {
@@ -195,7 +209,7 @@ impl<I, R, T> UdpServer<I, R, T>
     /// 创建UdpServer
     /// 如果是linux 是系统,他会根据CPU核心数创建等比的UDP SOCKET 监听同一端口
     /// 已达到 M级的DPS 数量
-    pub async fn new<A: ToSocketAddrs>(addr: A) -> Result<Self, Box<dyn Error>> {
+    pub async fn new_inner<A: ToSocketAddrs>(addr: A, inner:Arc<Mutex<S>>) -> Result<Self, Box<dyn Error>> {
         let udp_list = Self::create_udp_socket_list(&addr, Self::get_cpu_count())?;
 
         let mut udp_map = vec![];
@@ -213,11 +227,14 @@ impl<I, R, T> UdpServer<I, R, T>
         }
 
         Ok(UdpServer {
+            inner,
             udp_contexts: udp_map,
             input: None,
             error_input: None,
         })
     }
+
+
 
     /// 设置收包函数
     /// 此函数必须符合 async 模式
@@ -245,6 +262,8 @@ impl<I, R, T> UdpServer<I, R, T>
                 let id = udp_sock.id;
                 let input_fn = Arc::downgrade(input);
                 let pees_ptr = udp_sock.peers.clone();
+
+                let inner= Arc::downgrade(&self.inner);
 
                 let err_input = {
                     if let Some(err) = &self.error_input {
@@ -295,8 +314,10 @@ impl<I, R, T> UdpServer<I, R, T>
                                 let input_wk = input_fn.upgrade();
                                 if let Some(input_in) = input_wk {
                                     let err ={
+
+
                                         let res =
-                                            input_in(peer.clone(), Bytes::from(buff[0..size].to_vec())).await;
+                                            input_in(inner.clone(),peer.clone(), Bytes::from(buff[0..size].to_vec())).await;
 
                                         match res {
                                             Err(er) => Some(format!("{}", er)),
