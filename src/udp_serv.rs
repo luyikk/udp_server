@@ -1,7 +1,7 @@
 use crate::error;
 use bytes::Bytes;
 use net2::{UdpBuilder, UdpSocketExt};
-use std::cell::{RefCell, Ref};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
