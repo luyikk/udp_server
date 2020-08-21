@@ -10,8 +10,8 @@ use std::error::Error;
 
 #[tokio::main]
 async fn main()->Result<(),Box<dyn Error>> {
-    let mut a = UdpServer::<_,_,i32>::new("0.0.0.0:5555").await?;
-    a.set_input(async move |peer,data|{
+    let mut a = UdpServer::<_,_,i32,_>::new("0.0.0.0:5555").await?;
+    a.set_input(async move |_,peer,data|{
         let mut un_peer = peer.lock().await;     
         un_peer.send(&data).await?;
         Ok(())
@@ -32,8 +32,8 @@ use std::error::Error;
 
 #[tokio::main]
 async fn main()->Result<(),Box<dyn Error>> {
-    let mut a = UdpServer::<_,_,i32>::new("0.0.0.0:5555").await?;
-    a.set_input(async move |peer,data|{
+    let mut a = UdpServer::<_,_,i32,_>::new("0.0.0.0:5555").await?;
+    a.set_input(async move |_,peer,data|{
         let mut un_peer = peer.lock().await;
         match &un_peer.token {
             Some(x)=>{
