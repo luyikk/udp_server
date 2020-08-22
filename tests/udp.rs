@@ -1,6 +1,5 @@
 #![feature(async_closure)]
 use udp_server::{Error, UdpServer};
-use std::cell::RefCell;
 use tokio::net::UdpSocket;
 use futures::executor::block_on;
 use std::sync::Arc;
@@ -27,10 +26,8 @@ async fn test_udp_inner_server(){
 
     a.set_err_input(|peer,err|{
         match peer {
-            Some(peer)=>{
-                block_on(async move{
-                    println!("{:?}-{}",peer.lock().await,err);
-                });
+            Some(peer)=> {
+                println!("{:?}-{}", peer, err);
             },
             None=>  println!("{}",err)
         }
@@ -39,10 +36,10 @@ async fn test_udp_inner_server(){
     });
 
     a.set_input(async move |inner,peer,data|{
-        let mut un_peer = peer.lock().await;
-        match &un_peer.token {
-            Some(x)=>{
-                *x.borrow_mut()+=1;
+        let mut token = peer.token.lock().await;
+        match token.0 {
+            Some(ref mut x)=>{
+                *x+=1;
                 match inner.upgrade() {
                     Some(inner)=> {
                        let v= block_on(async move {
@@ -60,7 +57,7 @@ async fn test_udp_inner_server(){
                 }
             },
             None=> {
-                un_peer.token = Some(RefCell::new(1));
+                token.0 = Some(1);
                 if let Some(inner) = inner.upgrade() {
                     block_on(async move {
                         let mut inner = inner.lock().await;
@@ -71,7 +68,7 @@ async fn test_udp_inner_server(){
             }
         }
 
-        un_peer.send(&data).await?;
+        peer.send(&data).await?;
 
         Ok(())
     });
@@ -106,9 +103,7 @@ async fn test_udp_new_server(){
     a.set_err_input(|peer,err|{
         match peer {
             Some(peer)=>{
-                block_on(async move{
-                    println!("{:?}-{}",peer.lock().await,err);
-                });
+                    println!("{:?}-{}",peer,err);
             },
             None=>  println!("{}",err)
         }
@@ -117,20 +112,20 @@ async fn test_udp_new_server(){
     });
 
     a.set_input(async move |_,peer,data|{
-        let mut un_peer = peer.lock().await;
-        match &un_peer.token {
-            Some(x)=>{
-                *x.borrow_mut()+=1;
-                if *x.borrow() >=100{
+        let mut token = peer.token.lock().await;
+        match token.0 {
+            Some(ref mut x)=>{
+                *x+=1;
+                if *x >=100{
                     return Err("stop".into());
                 }
             },
             None=> {
-                un_peer.token = Some(RefCell::new(1));
+                token.0 = Some(1);
             }
         }
 
-        un_peer.send(&data).await?;
+        peer.send(&data).await?;
 
         Ok(())
     });

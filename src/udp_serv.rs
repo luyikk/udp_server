@@ -1,7 +1,5 @@
 use crate::error;
-use bytes::Bytes;
 use net2::{UdpBuilder, UdpSocketExt};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
@@ -14,9 +12,10 @@ use tokio::sync::Mutex;
 use tokio::time::{delay_for, Duration};
 use futures::executor::block_on;
 
+
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
-use futures::io::ErrorKind;
+use std::io::ErrorKind;
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -28,7 +27,7 @@ pub struct UdpContext<T: Send> {
     pub id: usize,
     recv: Arc<Mutex<RecvHalf>>,
     pub send: Arc<Mutex<SendHalf>>,
-    pub peers: Arc<Mutex<HashMap<SocketAddr, Arc<Mutex<Peer<T>>>>>>,
+    pub peers: Arc<Mutex<HashMap<SocketAddr, Arc<Peer<T>>>>>,
 }
 
 /// UDP 服务器对象
@@ -40,7 +39,6 @@ pub struct UdpContext<T: Send> {
 /// ```
 /// #![feature(async_closure)]
 /// use udp_server::UdpServer;
-/// use std::cell::RefCell;
 /// use tokio::net::UdpSocket;
 /// use std::sync::Arc;
 /// use tokio::sync::Mutex;
@@ -49,16 +47,16 @@ pub struct UdpContext<T: Send> {
 /// async fn main() {
 ///    let mut a = UdpServer::new("127.0.0.1:5555").await.unwrap();
 ///    a.set_input(async move |_,peer,data|{
-///         let mut un_peer = peer.lock().await;
-///         match &un_peer.token {
-///             Some(x)=>{
-///                 *x.borrow_mut()+=1;
+///         let mut token = peer.token.lock().await;
+///         match token.0 {
+///             Some(ref mut x)=>{
+///                 *x+=1;
 ///                 }
 ///             None=>{
-///                 un_peer.token=Some(RefCell::new(1));
+///                 token.0=Some(1);
 ///             }
 ///         }
-///         un_peer.send(&data).await?;
+///         peer.send(&data).await?;
 ///         Err("stop it".into())
 ///     });
 ///
@@ -76,7 +74,7 @@ pub struct UdpContext<T: Send> {
 /// ```
 pub struct UdpServer<I, R, T,S>
     where
-        I: Fn(Weak<S>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        I: Fn(Weak<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Box<dyn Error>>>,
         T: Send + 'static,
         S: Sync +Send+'static
@@ -84,8 +82,12 @@ pub struct UdpServer<I, R, T,S>
     inner:Arc<S>,
     udp_contexts: Vec<UdpContext<T>>,
     input: Option<Arc<I>>,
-    error_input: Option<Arc<Mutex<dyn Fn(Option<Arc<Mutex<Peer<T>>>>, Box<dyn Error>)->bool + Send>>>,
+    error_input: Option<Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>>,
 }
+
+/// 用来存储Token
+#[derive(Debug)]
+pub struct TokenStore<T:Send>(pub Option<T>);
 
 /// Peer 对象
 /// 用来标识client
@@ -99,7 +101,7 @@ pub struct UdpServer<I, R, T,S>
 pub struct Peer<T: Send> {
     pub socket_id: usize,
     pub addr: SocketAddr,
-    pub token: Option<RefCell<T>>,
+    pub token: Arc<Mutex<TokenStore<T>>>,
     pub udp_sock: Weak<Mutex<SendHalf>>,
 }
 
@@ -121,7 +123,7 @@ impl<T: Send> Peer<T> {
     /// Send 发送数据包
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
-    pub async fn send(&mut self, data: &[u8]) -> Result<usize, std::io::Error> {
+    pub async fn send(&self, data: &[u8]) -> Result<usize, std::io::Error> {
         let sock_have = self.udp_sock.upgrade();
         return match sock_have {
             Some(sock) => Ok(sock.lock().await.send_to(data, &self.addr).await?),
@@ -131,7 +133,7 @@ impl<T: Send> Peer<T> {
 }
 
 impl <I,R,T> UdpServer<I,R,T,()>  where
-    I: Fn(Weak<()>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+    I: Fn(Weak<()>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send,
     T: Send + 'static{
 
@@ -142,7 +144,7 @@ impl <I,R,T> UdpServer<I,R,T,()>  where
 
 impl<I, R, T, S> UdpServer<I, R, T, S>
     where
-        I: Fn(Weak<S>,Arc<Mutex<Peer<T>>>, Bytes) -> R + Send + Sync + 'static,
+        I: Fn(Weak<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Box<dyn Error>>> + Send,
         T: Send + 'static,
         S: Sync +Send + 'static{
@@ -244,7 +246,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
 
     /// 设置错误输出
     /// 返回bool 如果 true　表示停止服务
-    pub fn set_err_input<P: Fn(Option<Arc<Mutex<Peer<T>>>>, Box<dyn Error>)->bool + Send + 'static>(&mut self, err_input: P) {
+    pub fn set_err_input<P: Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send + 'static>(&mut self, err_input: P) {
         self.error_input = Some(Arc::new(Mutex::new(err_input)));
     }
 
@@ -270,18 +272,15 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                         let x = err;
                         x.clone()
                     } else {
-                        Arc::new(Mutex::new(|peer:Option<Arc<Mutex<Peer<T>>>>, err:Box<dyn Error>| {
-                            block_on(async move {
-                                match peer {
-                                    Some(peer)=>{
-                                        println!("{}-{}",peer.lock().await.addr, err);
-                                    }
-                                    None=>{
-                                        println!("{}", err);
-                                    }
+                        Arc::new(Mutex::new(|peer:Option<Arc<Peer<T>>>, err:Box<dyn Error>| {
+                            match peer {
+                                Some(peer) => {
+                                    println!("{}-{}", peer.addr, err);
                                 }
-
-                            });
+                                None => {
+                                    println!("{}", err);
+                                }
+                            }
                             true
                         }))
                     }
@@ -301,12 +300,12 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                 let peer = {
                                     let mut lock_pees = pees_ptr.lock().await;
                                     let res = lock_pees.entry(addr).or_insert_with(|| {
-                                        Arc::new(Mutex::new(Peer {
+                                        Arc::new(Peer {
                                             socket_id: id,
                                             addr,
-                                            token: None,
-                                            udp_sock: Arc::downgrade(&send_sock),
-                                        }))
+                                            token: Arc::new(Mutex::new(TokenStore(None))),
+                                            udp_sock: Arc::downgrade(&send_sock)
+                                        })
                                     });
                                     res.clone()
                                 };
@@ -315,9 +314,8 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                 if let Some(input_in) = input_wk {
                                     let err ={
 
-
                                         let res =
-                                            input_in(inner.clone(),peer.clone(), Bytes::from(buff[0..size].to_vec())).await;
+                                            input_in(inner.clone(),peer.clone(), buff[0..size].to_vec()).await;
 
                                         match res {
                                             Err(er) => Some(format!("{}", er)),
