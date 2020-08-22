@@ -15,7 +15,7 @@ use futures::executor::block_on;
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
-use std::io::ErrorKind;
+
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -89,6 +89,33 @@ pub struct UdpServer<I, R, T,S>
 #[derive(Debug)]
 pub struct TokenStore<T:Send>(pub Option<T>);
 
+/// 用来存储SendHalf 并实现Write
+#[derive(Debug)]
+pub struct UdpSend(pub Weak<Mutex<SendHalf>>,pub SocketAddr);
+
+impl UdpSend{
+    pub async fn send(&mut self,buf: &[u8])->std::io::Result<usize>{
+        if let Some(ref sock) =self.0.upgrade(){
+            let mut un_sock=  sock.lock().await;
+            return un_sock.send_to(buf,&self.1).await;
+        }
+        Ok(0)
+    }
+}
+
+/// 实现 Write for UdpSend
+impl std::io::Write for UdpSend{
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        block_on(async move {
+            self.send(buf).await
+        })
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Peer 对象
 /// 用来标识client
 /// socket_id 标识 所在哪个UDPContent,一般只在头一次接收到数据的时候设置
@@ -102,33 +129,17 @@ pub struct Peer<T: Send> {
     pub socket_id: usize,
     pub addr: SocketAddr,
     pub token: Arc<Mutex<TokenStore<T>>>,
-    pub udp_sock: Weak<Mutex<SendHalf>>,
+    pub udp_sock: Arc<Mutex<UdpSend>>,
 }
 
-///实现 Write for peer
-impl<T:Send> std::io::Write for Peer<T>{
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let res = block_on(async move {
-            self.send(buf).await
-        })?;
-        Ok(res)
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 impl<T: Send> Peer<T> {
     /// Send 发送数据包
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
     pub async fn send(&self, data: &[u8]) -> Result<usize, std::io::Error> {
-        let sock_have = self.udp_sock.upgrade();
-        return match sock_have {
-            Some(sock) => Ok(sock.lock().await.send_to(data, &self.addr).await?),
-            None => Err(std::io::Error::new(ErrorKind::Other,"SendHalf is null".to_string()).into()),
-        };
+        let mut sock_have = self.udp_sock.lock().await;
+        sock_have.send(data).await
     }
 }
 
@@ -222,7 +233,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             udp_map.push(UdpContext {
                 id,
                 recv: Arc::new(Mutex::new(recv)),
-                send: Arc::new(Mutex::new(send)),
+                send: Arc::new(Mutex::new( send)),
                 peers: Arc::new(Mutex::new(HashMap::new())),
             });
             id += 1;
@@ -304,7 +315,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                             socket_id: id,
                                             addr,
                                             token: Arc::new(Mutex::new(TokenStore(None))),
-                                            udp_sock: Arc::downgrade(&send_sock)
+                                            udp_sock: Arc::new(Mutex::new( UdpSend( Arc::downgrade( &send_sock),addr)))
                                         })
                                     });
                                     res.clone()
