@@ -1,7 +1,6 @@
 #![feature(async_closure)]
 use udp_server::{Error, UdpServer};
 use tokio::net::UdpSocket;
-use futures::executor::block_on;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -37,37 +36,31 @@ async fn test_udp_inner_server(){
 
     a.set_input(async move |inner,peer,data|{
         let mut token = peer.token.lock().await;
-        match token.0 {
-            Some(ref mut x)=>{
-                *x+=1;
-                match inner.upgrade() {
-                    Some(inner)=> {
-                       let v= block_on(async move {
-                            let mut inner = inner.lock().await;
-                            *inner +=1;
-                            println!("inner:{}",inner);
-                            return inner.clone();
-                        });
 
-                        if v ==1000{
-                            return Err("stop".into());
-                        }
-                    },
-                    None=>{}
-                }
-            },
-            None=> {
-                token.0 = Some(1);
-                if let Some(inner) = inner.upgrade() {
-                    block_on(async move {
-                        let mut inner = inner.lock().await;
-                        *inner += 1;
-                        println!("inner:{}", inner);
-                    });
-                }
+        if !token.have(){
+            token.set(1);
+            if let Some(inner)=inner.upgrade(){
+                let mut inner = inner.lock().await;
+                *inner += 1;
+                println!("inner:{}", inner);
             }
         }
+        else{
+            let value=token.get().unwrap();
+            *value+=1;
+            match inner.upgrade() {
+                Some(inner) => {
 
+                    let mut inner = inner.lock().await;
+                    *inner += 1;
+                    println!("inner:{}", inner);
+                    if  *inner == 1000 {
+                        return Err("stop".into());
+                    }
+                },
+                None => {}
+            }
+        }
         peer.send(&data).await?;
 
         Ok(())
@@ -113,15 +106,15 @@ async fn test_udp_new_server(){
 
     a.set_input(async move |_,peer,data|{
         let mut token = peer.token.lock().await;
-        match token.0 {
-            Some(ref mut x)=>{
+        match token.get() {
+            Some(x)=>{
                 *x+=1;
                 if *x >=100{
                     return Err("stop".into());
                 }
             },
             None=> {
-                token.0 = Some(1);
+                token.set(0);
             }
         }
 

@@ -22,6 +22,7 @@ use net2::unix::UnixUdpBuilderExt;
 /// 如果局域网有可能大点,4096一般够用.
 pub const BUFF_MAX_SIZE: usize = 4096;
 
+
 /// UDP SOCKET 上下文,包含 id, 和Pees, 用于收发数据
 pub struct UdpContext<T: Send> {
     pub id: usize,
@@ -29,6 +30,8 @@ pub struct UdpContext<T: Send> {
     pub send: Arc<Mutex<SendHalf>>,
     pub peers: Arc<Mutex<HashMap<SocketAddr, Arc<Peer<T>>>>>,
 }
+
+
 
 /// UDP 服务器对象
 /// I 用来限制必须input的FN 原型,
@@ -48,12 +51,12 @@ pub struct UdpContext<T: Send> {
 ///    let mut a = UdpServer::new("127.0.0.1:5555").await.unwrap();
 ///    a.set_input(async move |_,peer,data|{
 ///         let mut token = peer.token.lock().await;
-///         match token.0 {
-///             Some(ref mut x)=>{
+///         match token.get() {
+///             Some(x)=>{
 ///                 *x+=1;
 ///                 }
 ///             None=>{
-///                 token.0=Some(1);
+///                 token.set(1);
 ///             }
 ///         }
 ///         peer.send(&data).await?;
@@ -89,12 +92,33 @@ pub struct UdpServer<I, R, T,S>
 #[derive(Debug)]
 pub struct TokenStore<T:Send>(pub Option<T>);
 
+impl<T:Send> TokenStore<T>{
+    pub fn have(&self)->bool{
+        match &self.0 {
+            None=>false,
+            Some(_)=>true
+        }
+    }
+
+    pub fn get(&mut self)->Option<&mut T> {
+        match self.0 {
+            None=>None,
+            Some(ref mut v)=>Some(v)
+        }
+    }
+
+    pub fn set(&mut self,v:T) {
+        self.0 = Some(v);
+    }
+}
+
+
 /// 用来存储SendHalf 并实现Write
 #[derive(Debug)]
 pub struct UdpSend(pub Weak<Mutex<SendHalf>>,pub SocketAddr);
 
 impl UdpSend{
-    pub async fn send(&mut self,buf: &[u8])->std::io::Result<usize>{
+    pub async fn send(&self,buf: &[u8])->std::io::Result<usize>{
         if let Some(ref sock) =self.0.upgrade(){
             let mut un_sock=  sock.lock().await;
             return un_sock.send_to(buf,&self.1).await;
@@ -138,7 +162,7 @@ impl<T: Send> Peer<T> {
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
     pub async fn send(&self, data: &[u8]) -> Result<usize, std::io::Error> {
-        let mut sock_have = self.udp_sock.lock().await;
+        let sock_have = self.udp_sock.lock().await;
         sock_have.send(data).await
     }
 }
