@@ -15,7 +15,7 @@ use futures::executor::block_on;
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
-
+use tokio::io::ErrorKind;
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -120,8 +120,16 @@ pub struct UdpSend(pub Weak<Mutex<SendHalf>>,pub SocketAddr);
 impl UdpSend{
     pub async fn send(&self,buf: &[u8])->std::io::Result<usize>{
         if let Some(ref sock) =self.0.upgrade(){
-            let mut un_sock=  sock.lock().await;
-            return un_sock.send_to(buf,&self.1).await;
+            let mut res=  sock.try_lock();
+            return match res {
+                Ok(ref mut un_sock) => {
+                    un_sock.send_to(buf, &self.1).await
+                },
+                Err(err) => {
+                    Err(std::io::Error::new(ErrorKind::Other, err))
+                }
+            }
+
         }
         Ok(0)
     }
