@@ -147,7 +147,7 @@ pub struct Peer<T: Send> {
     pub socket_id: usize,
     pub addr: SocketAddr,
     pub token: Arc<Mutex<TokenStore<T>>>,
-    pub udp_sock: UdpSend,
+    pub udp_sock: Arc<UdpSend>,
 }
 
 
@@ -332,7 +332,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                             socket_id: id,
                                             addr,
                                             token: Arc::new(Mutex::new(TokenStore(None))),
-                                            udp_sock:  UdpSend( send_sock.clone(),addr)
+                                            udp_sock:  Arc::new(UdpSend( send_sock.clone(),addr))
                                         })
                                     });
                                     res.clone()
