@@ -10,7 +10,7 @@ use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use tokio::time::{delay_for, Duration};
-use futures::executor::block_on;
+
 
 
 #[cfg(not(target_os = "windows"))]
@@ -115,38 +115,24 @@ impl<T:Send> TokenStore<T>{
 
 /// 用来存储SendHalf 并实现Write
 #[derive(Debug)]
-pub struct UdpSend(pub Weak<Mutex<SendHalf>>,pub SocketAddr);
+pub struct UdpSend(pub Arc<Mutex<SendHalf>>,pub SocketAddr);
 
 impl UdpSend{
-    pub async fn send(&self,buf: &[u8])->std::io::Result<usize>{
-        if let Some(ref sock) =self.0.upgrade(){
-            let mut res=  sock.try_lock();
-            return match res {
-                Ok(ref mut un_sock) => {
-                    un_sock.send_to(buf, &self.1).await
-                },
-                Err(err) => {
-                    Err(std::io::Error::new(ErrorKind::Other, err))
-                }
+    pub async fn send(&self,buf: &[u8])->std::io::Result<usize> {
+
+        let mut res = self.0.try_lock();
+        return match res {
+            Ok(ref mut un_sock) => {
+                un_sock.send_to(buf, &self.1).await
+            },
+            Err(err) => {
+                Err(std::io::Error::new(ErrorKind::Other, err))
             }
+        };
 
-        }
-        Ok(0)
     }
 }
 
-/// 实现 Write for UdpSend
-impl std::io::Write for UdpSend{
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        block_on(async move {
-            self.send(buf).await
-        })
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
 
 /// Peer 对象
 /// 用来标识client
@@ -161,7 +147,7 @@ pub struct Peer<T: Send> {
     pub socket_id: usize,
     pub addr: SocketAddr,
     pub token: Arc<Mutex<TokenStore<T>>>,
-    pub udp_sock: Arc<Mutex<UdpSend>>,
+    pub udp_sock: UdpSend,
 }
 
 
@@ -170,8 +156,7 @@ impl<T: Send> Peer<T> {
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
     pub async fn send(&self, data: &[u8]) -> Result<usize, std::io::Error> {
-        let sock_have = self.udp_sock.lock().await;
-        sock_have.send(data).await
+        self.udp_sock.send(data).await
     }
 }
 
@@ -347,7 +332,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                             socket_id: id,
                                             addr,
                                             token: Arc::new(Mutex::new(TokenStore(None))),
-                                            udp_sock: Arc::new(Mutex::new( UdpSend( Arc::downgrade( &send_sock),addr)))
+                                            udp_sock:  UdpSend( send_sock.clone(),addr)
                                         })
                                     });
                                     res.clone()
