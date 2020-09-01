@@ -32,12 +32,12 @@ async fn main()->Result<(),Box<dyn Error>> {
     let mut a = UdpServer::new("0.0.0.0:5555").await?;
     a.set_input(async move |_,peer,data|{
         let mut token = peer.token.lock().await;
-        match token.0 {
-            Some(ref mut x)=>{
+        match token.get() {
+            Some(x)=>{
                 *x+=1;
             },
             None=>{
-                token.0=Some(1);
+                token.set(Some(1));
             }
         }
         peer.send(&data).await?;

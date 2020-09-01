@@ -56,7 +56,7 @@ pub struct UdpContext<T: Send> {
 ///                 *x+=1;
 ///                 }
 ///             None=>{
-///                 token.set(1);
+///                 token.set(Some(1));
 ///             }
 ///         }
 ///         peer.send(&data).await?;
@@ -107,8 +107,8 @@ impl<T:Send> TokenStore<T>{
         }
     }
 
-    pub fn set(&mut self,v:T) {
-        self.0 = Some(v);
+    pub fn set(&mut self,v:Option<T>) {
+        self.0 = v;
     }
 }
 

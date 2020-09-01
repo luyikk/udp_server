@@ -38,7 +38,7 @@ async fn test_udp_inner_server(){
         let mut token = peer.token.lock().await;
 
         if !token.have(){
-            token.set(1);
+            token.set(Some(1));
             if let Some(inner)=inner.upgrade(){
                 let mut inner = inner.lock().await;
                 *inner += 1;
@@ -114,7 +114,7 @@ async fn test_udp_new_server(){
                 }
             },
             None=> {
-                token.set(0);
+                token.set(Some(0));
             }
         }
 
