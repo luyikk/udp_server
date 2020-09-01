@@ -119,17 +119,7 @@ pub struct UdpSend(pub Arc<Mutex<SendHalf>>,pub SocketAddr);
 
 impl UdpSend{
     pub async fn send(&self,buf: &[u8])->std::io::Result<usize> {
-
-        let mut res = self.0.try_lock();
-        return match res {
-            Ok(ref mut un_sock) => {
-                un_sock.send_to(buf, &self.1).await
-            },
-            Err(err) => {
-                Err(std::io::Error::new(ErrorKind::Other, err))
-            }
-        };
-
+        self.0.lock().await.send_to(buf,&self.1).await
     }
 }
 
