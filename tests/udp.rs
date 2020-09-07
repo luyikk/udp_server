@@ -37,28 +37,20 @@ async fn test_udp_inner_server(){
     a.set_input(async move |inner,peer,data|{
         let mut token = peer.token.lock().await;
 
-        if !token.have(){
+        if !token.have() {
             token.set(Some(1));
-            if let Some(inner)=inner.upgrade(){
-                let mut inner = inner.lock().await;
-                *inner += 1;
-                println!("inner:{}", inner);
-            }
+            let mut inner = inner.lock().await;
+            *inner += 1;
+            println!("inner:{}", inner);
         }
-        else{
-            let value=token.get().unwrap();
-            *value+=1;
-            match inner.upgrade() {
-                Some(inner) => {
-
-                    let mut inner = inner.lock().await;
-                    *inner += 1;
-                    println!("inner:{}", inner);
-                    if  *inner == 1000 {
-                        return Err("stop".into());
-                    }
-                },
-                None => {}
+        else {
+            let value = token.get().unwrap();
+            *value += 1;
+            let mut inner = inner.lock().await;
+            *inner += 1;
+            println!("inner:{}", inner);
+            if *inner == 1000 {
+                return Err("stop".into());
             }
         }
         peer.send(&data).await?;

@@ -5,7 +5,7 @@ use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
@@ -15,7 +15,6 @@ use tokio::time::{delay_for, Duration};
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
-use tokio::io::ErrorKind;
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -77,7 +76,7 @@ pub struct UdpContext<T: Send> {
 /// ```
 pub struct UdpServer<I, R, T,S>
     where
-        I: Fn(Weak<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
+        I: Fn(Arc<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Box<dyn Error>>>,
         T: Send + 'static,
         S: Sync +Send+'static
@@ -151,7 +150,7 @@ impl<T: Send> Peer<T> {
 }
 
 impl <I,R,T> UdpServer<I,R,T,()>  where
-    I: Fn(Weak<()>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
+    I: Fn(Arc<()>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send,
     T: Send + 'static{
 
@@ -162,7 +161,7 @@ impl <I,R,T> UdpServer<I,R,T,()>  where
 
 impl<I, R, T, S> UdpServer<I, R, T, S>
     where
-        I: Fn(Weak<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
+        I: Fn(Arc<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
         R: Future<Output = Result<(), Box<dyn Error>>> + Send,
         T: Send + 'static,
         S: Sync +Send + 'static{
@@ -279,12 +278,10 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             for udp_sock in self.udp_contexts.iter() {
                 let recv_sock = Arc::downgrade(&udp_sock.recv);
                 let send_sock = udp_sock.send.clone();
+                let input=input.clone();
                 let id = udp_sock.id;
-                let input_fn = Arc::downgrade(input);
                 let pees_ptr = udp_sock.peers.clone();
-
-                let inner= Arc::downgrade(&self.inner);
-
+                let inner= self.inner.clone();
                 let err_input = {
                     if let Some(err) = &self.error_input {
                         let x = err;
@@ -322,45 +319,34 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                                             socket_id: id,
                                             addr,
                                             token: Arc::new(Mutex::new(TokenStore(None))),
-                                            udp_sock:  Arc::new(UdpSend( send_sock.clone(),addr))
+                                            udp_sock: Arc::new(UdpSend(send_sock.clone(), addr))
                                         })
                                     });
                                     res.clone()
                                 };
 
-                                let input_wk = input_fn.upgrade();
-                                if let Some(input_in) = input_wk {
-                                    let err ={
 
-                                        let res =
-                                            input_in(inner.clone(),peer.clone(), buff[0..size].to_vec()).await;
+                                let err = {
+                                    let res =
+                                        input(inner.clone(), peer.clone(), buff[0..size].to_vec()).await;
 
-                                        match res {
-                                            Err(er) => Some(format!("{}", er)),
-                                            Ok(()) => None,
-                                        }
-                                    };
-
-                                    if let Some(err_msg) = err {
-                                        let error = err_input.lock().await;
-                                        let stop=error(
-                                            Some(peer),
-                                            err_msg.into(),
-                                        );
-                                        if stop{
-                                            return;
-                                        }
+                                    match res {
+                                        Err(er) => Some(format!("{}", er)),
+                                        Ok(()) => None,
                                     }
-                                } else {
+                                };
+
+                                if let Some(err_msg) = err {
                                     let error = err_input.lock().await;
-                                    let stop=error(
-                                        None,
-                                        format!("{} input in null?",addr).into(),
+                                    let stop = error(
+                                        Some(peer),
+                                        err_msg.into(),
                                     );
-                                    if stop{
+                                    if stop {
                                         return;
                                     }
                                 }
+
                             } else if let Err(er) = res {
                                 let error = err_input.lock().await;
                                 let stop= error(None, error::Error::IOError(er.into()).into());
