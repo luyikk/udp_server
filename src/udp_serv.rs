@@ -175,6 +175,8 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
         Ok(res)
     }
 
+
+
     ///用于windows创建socket
     #[cfg(target_os = "windows")]
     fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> Result<std::net::UdpSocket, Box<dyn Error>> {
@@ -265,6 +267,17 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 返回bool 如果 true　表示停止服务
     pub fn set_err_input<P: Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send + 'static>(&mut self, err_input: P) {
         self.error_input = Some(Arc::new(Mutex::new(err_input)));
+    }
+
+    /// 根据地址删除peer
+    pub async fn remove_peer(&self,addr:SocketAddr)->bool{
+        for udp_server in  self.udp_contexts.iter() {
+            let mut peer_dict= udp_server.peers.lock().await;
+            if let Some(_)= peer_dict.remove(&addr){
+                return  true;
+            }
+        }
+        false
     }
 
     /// 启动服务
