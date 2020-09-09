@@ -270,11 +270,13 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     }
 
     /// 根据地址删除peer
-    pub async fn remove_peer(&self,addr:SocketAddr)->bool{
+    pub fn remove_peer(&self,addr:SocketAddr)->bool{
         for udp_server in  self.udp_contexts.iter() {
-            let mut peer_dict= udp_server.peers.lock().await;
-            if let Some(_)= peer_dict.remove(&addr){
-                return  true;
+            let mut res= udp_server.peers.try_lock();
+            if let Ok(ref mut peer_dict)=res {
+                if let Some(_) = peer_dict.remove(&addr) {
+                    return true;
+                }
             }
         }
         false
