@@ -221,7 +221,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
 
     #[cfg(not(target_os = "windows"))]
     fn get_cpu_count() -> usize {
-        num_cpus::get()*2
+        num_cpus::get()
     }
 
     #[cfg(target_os = "windows")]
