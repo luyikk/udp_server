@@ -120,6 +120,8 @@ impl UdpSend{
     pub async fn send(&self,buf: &[u8])->std::io::Result<usize> {
         self.0.lock().await.send_to(buf,&self.1).await
     }
+
+
 }
 
 
@@ -219,7 +221,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
 
     #[cfg(not(target_os = "windows"))]
     fn get_cpu_count() -> usize {
-        num_cpus::get()
+        num_cpus::get()*2
     }
 
     #[cfg(target_os = "windows")]
