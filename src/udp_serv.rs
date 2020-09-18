@@ -30,7 +30,8 @@ pub struct UdpContext<T: Send> {
     pub peers: Arc<Mutex<HashMap<SocketAddr, Arc<Peer<T>>>>>,
 }
 
-
+/// 错误输入类型
+pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>;
 
 /// UDP 服务器对象
 /// I 用来限制必须input的FN 原型,
@@ -84,8 +85,10 @@ pub struct UdpServer<I, R, T,S>
     inner:Arc<S>,
     udp_contexts: Vec<UdpContext<T>>,
     input: Option<Arc<I>>,
-    error_input: Option<Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>>,
+    error_input: Option<ErrorInput<T>>,
 }
+
+
 
 /// 用来存储Token
 #[derive(Debug)]
@@ -93,17 +96,11 @@ pub struct TokenStore<T:Send>(pub Option<T>);
 
 impl<T:Send> TokenStore<T>{
     pub fn have(&self)->bool{
-        match &self.0 {
-            None=>false,
-            Some(_)=>true
-        }
+        self.0.is_some()
     }
 
     pub fn get(&mut self)->Option<&mut T> {
-        match self.0 {
-            None=>None,
-            Some(ref mut v)=>Some(v)
-        }
+        self.0.as_mut()
     }
 
     pub fn set(&mut self,v:Option<T>) {
@@ -120,8 +117,6 @@ impl UdpSend{
     pub async fn send(&self,buf: &[u8])->std::io::Result<usize> {
         self.0.lock().await.send_to(buf,&self.1).await
     }
-
-
 }
 
 
@@ -215,7 +210,6 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             let sock = Self::create_async_udp_socket(addr)?;
             listens.push(sock);
         }
-
         Ok(listens)
     }
 
@@ -276,9 +270,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
         for udp_server in  self.udp_contexts.iter() {
             let mut res= udp_server.peers.try_lock();
             if let Ok(ref mut peer_dict)=res {
-                if let Some(_) = peer_dict.remove(&addr) {
-                    return true;
-                }
+                return peer_dict.remove(&addr).is_some();
             }
         }
         false
@@ -366,7 +358,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
 
                             } else if let Err(er) = res {
                                 let error = err_input.lock().await;
-                                let stop= error(None, error::Error::IOError(er.into()).into());
+                                let stop= error(None, error::Error::IOError(er).into());
                                 if stop{
                                     return;
                                 }
