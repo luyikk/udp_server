@@ -6,15 +6,18 @@ use std::error::Error;
 use std::future::Future;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
-use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tokio::time::{delay_for, Duration};
-
+use tokio::sync::mpsc::unbounded_channel;
+use std::cell::RefCell;
+use crate::send::{SendUDP, SendPool};
+use tokio::net::udp::RecvHalf;
 
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
+
+
 
 
 /// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
@@ -25,10 +28,13 @@ pub const BUFF_MAX_SIZE: usize = 4096;
 /// UDP SOCKET 上下文,包含 id, 和Pees, 用于收发数据
 pub struct UdpContext<T: Send> {
     pub id: usize,
-    recv: Arc<Mutex<RecvHalf>>,
-    pub send: Arc<Mutex<SendHalf>>,
-    pub peers: Arc<Mutex<HashMap<SocketAddr, Arc<Peer<T>>>>>,
+    recv: RefCell<Option<RecvHalf>>,
+    pub send: SendPool,
+    pub peers: RefCell<HashMap<SocketAddr, Arc<Peer<T>>>>,
 }
+
+unsafe  impl<T:Send> Send for UdpContext<T>{}
+unsafe  impl<T:Send> Sync for  UdpContext<T>{}
 
 /// 错误输入类型
 pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>;
@@ -59,7 +65,7 @@ pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->b
 ///                 token.set(Some(1));
 ///             }
 ///         }
-///         peer.send(&data).await?;
+///         peer.send(data).await?;
 ///         Err("stop it".into())
 ///     });
 ///
@@ -109,16 +115,6 @@ impl<T:Send> TokenStore<T>{
 }
 
 
-/// 用来存储SendHalf 并实现Write
-#[derive(Debug)]
-pub struct UdpSend(pub Arc<Mutex<SendHalf>>,pub SocketAddr);
-
-impl UdpSend{
-    pub async fn send(&self,buf: &[u8])->std::io::Result<usize> {
-        self.0.lock().await.send_to(buf,&self.1).await
-    }
-}
-
 
 /// Peer 对象
 /// 用来标识client
@@ -133,7 +129,7 @@ pub struct Peer<T: Send> {
     pub socket_id: usize,
     pub addr: SocketAddr,
     pub token: Arc<Mutex<TokenStore<T>>>,
-    pub udp_sock: Arc<UdpSend>,
+    pub udp_sock: SendUDP,
 }
 
 
@@ -141,8 +137,9 @@ impl<T: Send> Peer<T> {
     /// Send 发送数据包
     /// 作为最基本的函数之一,它采用了tokio的async send_to
     /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
-    pub async fn send(&self, data: &[u8]) -> Result<usize, std::io::Error> {
-        self.udp_sock.send(data).await
+    pub async fn send(&self, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+        self.udp_sock.send((data,self.addr))?;
+        Ok(())
     }
 }
 
@@ -236,9 +233,9 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             let (recv, send) = udp.split();
             udp_map.push(UdpContext {
                 id,
-                recv: Arc::new(Mutex::new(recv)),
-                send: Arc::new(Mutex::new( send)),
-                peers: Arc::new(Mutex::new(HashMap::new())),
+                recv:RefCell::new(Some(recv)),
+                send: SendPool::new(send),
+                peers: RefCell::new(HashMap::new()),
             });
             id += 1;
         }
@@ -268,10 +265,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 根据地址删除peer
     pub fn remove_peer(&self,addr:SocketAddr)->bool{
         for udp_server in  self.udp_contexts.iter() {
-            let mut res= udp_server.peers.try_lock();
-            if let Ok(ref mut peer_dict)=res {
-                return peer_dict.remove(&addr).is_some();
-            }
+            return udp_server.peers.borrow_mut().remove(&addr).is_some();
         }
         false
     }
@@ -282,97 +276,77 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 那么 就会输出默认的 err_input,如果输出默认的 err_input 那么整个服务将会停止
     /// 所以如果不想服务停止,那么必须自己实现 err_input 并且返回 false
     pub async fn start(&self) -> Result<(), Box<dyn Error>> {
-        if let Some(input) = &self.input {
-            let mut tasks = vec![];
-            for udp_sock in self.udp_contexts.iter() {
-                let recv_sock = Arc::downgrade(&udp_sock.recv);
-                let send_sock = udp_sock.send.clone();
-                let input=input.clone();
-                let id = udp_sock.id;
-                let pees_ptr = udp_sock.peers.clone();
-                let inner= self.inner.clone();
-                let err_input = {
-                    if let Some(err) = &self.error_input {
-                        let x = err;
-                        x.clone()
-                    } else {
-                        Arc::new(Mutex::new(|peer:Option<Arc<Peer<T>>>, err:Box<dyn Error>| {
-                            match peer {
-                                Some(peer) => {
-                                    println!("{}-{}", peer.addr, err);
-                                }
-                                None => {
-                                    println!("{}", err);
-                                }
+        if let Some(ref input) = self.input {
+            let err_input = {
+                if let Some(err) = &self.error_input {
+                    let x = err;
+                    x.clone()
+                } else {
+                    Arc::new(Mutex::new(|peer: Option<Arc<Peer<T>>>, err: Box<dyn Error>| {
+                        match peer {
+                            Some(peer) => {
+                                println!("{}-{}", peer.addr, err);
                             }
-                            true
-                        }))
-                    }
-                };
+                            None => {
+                                println!("{}", err);
+                            }
+                        }
+                        true
+                    }))
+                }
+            };
 
-                let pd = tokio::spawn(async move {
-                    let wk = recv_sock.upgrade();
-                    if let Some(sock_mutex) = wk {
+            let (tx, mut rx) = unbounded_channel();
+            for (index, udp_sock) in self.udp_contexts.iter().enumerate() {
+                let recv_sock = udp_sock.recv.borrow_mut().take();
+                if let Some(mut recv_sock) = recv_sock {
+                    let move_data_tx = tx.clone();
+                    let error_input=err_input.clone();
+                    tokio::spawn(async move {
                         let mut buff = [0; BUFF_MAX_SIZE];
                         loop {
                             let res = {
-                                let mut sock = sock_mutex.lock().await;
-                                sock.recv_from(&mut buff).await
+                                recv_sock.recv_from(&mut buff).await
                             };
 
                             if let Ok((size, addr)) = res {
-                                let peer = {
-                                    let mut lock_pees = pees_ptr.lock().await;
-                                    let res = lock_pees.entry(addr).or_insert_with(|| {
-                                        Arc::new(Peer {
-                                            socket_id: id,
-                                            addr,
-                                            token: Arc::new(Mutex::new(TokenStore(None))),
-                                            udp_sock: Arc::new(UdpSend(send_sock.clone(), addr))
-                                        })
-                                    });
-                                    res.clone()
-                                };
-
-
-                                let err = {
-                                    let res =
-                                        input(inner.clone(), peer.clone(), buff[0..size].to_vec()).await;
-
-                                    match res {
-                                        Err(er) => Some(format!("{}", er)),
-                                        Ok(()) => None,
-                                    }
-                                };
-
-                                if let Some(err_msg) = err {
-                                    let error = err_input.lock().await;
-                                    let stop = error(
-                                        Some(peer),
-                                        err_msg.into(),
-                                    );
-                                    if stop {
-                                        return;
-                                    }
+                                if let Err(er) = move_data_tx.send((index, addr, buff[..size].to_vec())) {
+                                    let error = error_input.lock().await;
+                                    let _ = error(None, Box::new(er));
+                                    break;
                                 }
-
                             } else if let Err(er) = res {
-                                let error = err_input.lock().await;
-                                let stop= error(None, error::Error::IOError(er).into());
-                                if stop{
+                                let error = error_input.lock().await;
+                                let stop = error(None, error::Error::IOError(er).into());
+                                if stop {
                                     return;
                                 }
                             }
                         }
-                    } else {
-                        delay_for(Duration::from_millis(1)).await;
-                    }
-                });
-                tasks.push(pd);
+                    });
+                }
             }
 
-            for task in tasks {
-                task.await?;
+            while let Some((index,  addr, data)) = rx.recv().await {
+                let udp_content = self.udp_contexts.get(index).unwrap();
+                let peer = udp_content.peers.borrow_mut().entry(addr).or_insert_with(|| {
+                    Arc::new(Peer {
+                        socket_id: index,
+                        addr,
+                        token: Arc::new(Mutex::new(TokenStore(None))),
+                        udp_sock: udp_content.send.get_tx()
+                    })
+                }).clone();
+
+
+                let res = input(self.inner.clone(), peer.clone(), data).await;
+                if let Err(er) = res {
+                    let error = err_input.lock().await;
+                    let stop = error(None, er.into());
+                    if stop {
+                        break;
+                    }
+                }
             }
 
             Ok(())

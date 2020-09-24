@@ -11,7 +11,7 @@ use std::error::Error;
 async fn main()->Result<(),Box<dyn Error>> {
     let mut a = UdpServer::<_,_,i32,_>::new("0.0.0.0:5555").await?;
     a.set_input(async move |_,peer,data|{
-        peer.send(&data).await?;
+        peer.send(data).await?;
         Ok(())
     });
 
@@ -40,7 +40,7 @@ async fn main()->Result<(),Box<dyn Error>> {
                 token.set(Some(1));
             }
         }
-        peer.send(&data).await?;
+        peer.send(data).await?;
         Ok(())
     });
 

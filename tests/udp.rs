@@ -49,11 +49,11 @@ async fn test_udp_inner_server(){
             let mut inner = inner.lock().await;
             *inner += 1;
             println!("inner:{}", inner);
-            if *inner == 1000 {
+            if *inner == 10 {
                 return Err("stop".into());
             }
         }
-        peer.send(&data).await?;
+        peer.send(data).await?;
 
         Ok(())
     });
@@ -64,74 +64,68 @@ async fn test_udp_inner_server(){
     let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     sender.connect("127.0.0.1:5555").await.unwrap();
     let message = b"hello!";
-    for _ in 0..1000 {
+    for _ in 0..10 {
         sender.send(message).await.unwrap();
     }
 
     ph.await.unwrap();
 
-    let mut recv_buf = [0u8; 32];
+    let mut recv_buf = [0u8; 4096];
     let len= sender.recv(&mut recv_buf[..]).await.unwrap();
-
+    println!("{:?}",recv_buf);
     assert_eq!(len,message.len());
-
 
 }
 
 
 
 #[tokio::test]
-async fn test_udp_new_server(){
-
+async fn test_udp_new_server() {
     let mut a = UdpServer::new("127.0.0.1:6666").await.unwrap();
 
-    a.set_err_input(|peer,err|{
+    a.set_err_input(|peer, err| {
         match peer {
-            Some(peer)=>{
-                    println!("{:?}-{}",peer,err);
+            Some(peer) => {
+                println!("{:?}-{}", peer, err);
             },
-            None=>  println!("{}",err)
+            None => println!("{}", err)
         }
 
         true
     });
 
-    a.set_input(async move |_,peer,data|{
+    a.set_input(async move |_, peer, data| {
         let mut token = peer.token.lock().await;
         match token.get() {
-            Some(x)=>{
-                *x+=1;
-                if *x >=100{
+            Some(x) => {
+                *x += 1;
+                if *x >= 100 {
                     return Err("stop".into());
                 }
             },
-            None=> {
+            None => {
                 token.set(Some(0));
             }
         }
 
-        peer.send(&data).await?;
+        peer.send(data).await?;
 
         Ok(())
     });
 
-    let ph= a.start();
 
 
     let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     sender.connect("127.0.0.1:6666").await.unwrap();
     let message = b"hello!";
-
     for _ in 0..1000 {
         sender.send(message).await.unwrap();
     }
 
-    ph.await.unwrap();
+    a.start().await.unwrap();
 
     let mut recv_buf = [0u8; 32];
-    let len= sender.recv(&mut recv_buf[..]).await.unwrap();
-
-    assert_eq!(len,message.len());
-
-
+    let len = sender.recv(&mut recv_buf[..]).await.unwrap();
+    assert_eq!(len, message.len());
 }
+
