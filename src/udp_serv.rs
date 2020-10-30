@@ -12,11 +12,10 @@ use tokio::sync::mpsc::unbounded_channel;
 use std::cell::RefCell;
 use crate::send::{SendUDP, SendPool};
 use tokio::net::udp::RecvHalf;
-
+use std::marker::PhantomData;
 
 #[cfg(not(target_os = "windows"))]
 use net2::unix::UnixUdpBuilderExt;
-
 
 
 
@@ -26,15 +25,15 @@ pub const BUFF_MAX_SIZE: usize = 4096;
 
 
 /// UDP SOCKET 上下文,包含 id, 和Pees, 用于收发数据
-pub struct UdpContext<T: Send> {
+pub struct UdpContext<T> {
     pub id: usize,
     recv: RefCell<Option<RecvHalf>>,
     pub send: SendPool,
     pub peers: RefCell<HashMap<SocketAddr, Arc<Peer<T>>>>,
 }
 
-unsafe  impl<T:Send> Send for UdpContext<T>{}
-unsafe  impl<T:Send> Sync for  UdpContext<T>{}
+unsafe  impl<T> Send for UdpContext<T>{}
+unsafe  impl<T> Sync for  UdpContext<T>{}
 
 /// 错误输入类型
 pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>;
@@ -82,23 +81,19 @@ pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->b
 ///
 /// ```
 pub struct UdpServer<I, R, T,S>
-    where
-        I: Fn(Arc<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
-        R: Future<Output = Result<(), Box<dyn Error>>>,
-        T: Send + 'static,
-        S: Sync +Send+'static
 {
     inner:Arc<S>,
     udp_contexts: Vec<UdpContext<T>>,
     input: Option<Arc<I>>,
     error_input: Option<ErrorInput<T>>,
+    phantom:PhantomData<R>
 }
 
 
 
 /// 用来存储Token
 #[derive(Debug)]
-pub struct TokenStore<T:Send>(pub Option<T>);
+pub struct TokenStore<T>(pub Option<T>);
 
 impl<T:Send> TokenStore<T>{
     pub fn have(&self)->bool{
@@ -125,7 +120,7 @@ impl<T:Send> TokenStore<T>{
 /// # token
 /// 你可以自定义放一些和用户有关的数据,这样的话方便你对用户进行区别,已提取用户逻辑数据
 #[derive(Debug)]
-pub struct Peer<T: Send> {
+pub struct Peer<T> {
     pub socket_id: usize,
     pub addr: SocketAddr,
     pub token: Arc<Mutex<TokenStore<T>>>,
@@ -245,6 +240,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             udp_contexts: udp_map,
             input: None,
             error_input: None,
+            phantom:PhantomData::default()
         })
     }
 
@@ -265,7 +261,9 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 根据地址删除peer
     pub fn remove_peer(&self,addr:SocketAddr)->bool{
         for udp_server in  self.udp_contexts.iter() {
-            return udp_server.peers.borrow_mut().remove(&addr).is_some();
+            if udp_server.peers.borrow_mut().remove(&addr).is_some(){
+                return true;
+            }
         }
         false
     }
@@ -342,7 +340,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                 let res = input(self.inner.clone(), peer.clone(), data).await;
                 if let Err(er) = res {
                     let error = err_input.lock().await;
-                    let stop = error(None, er.into());
+                    let stop = error(None, er);
                     if stop {
                         break;
                     }

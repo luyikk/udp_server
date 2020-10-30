@@ -114,7 +114,6 @@ async fn test_udp_new_server() {
     });
 
 
-
     let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     sender.connect("127.0.0.1:6666").await.unwrap();
     let message = b"hello!";
