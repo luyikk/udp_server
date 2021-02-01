@@ -11,7 +11,6 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc::unbounded_channel;
 use std::cell::RefCell;
 use crate::send::{SendUDP, SendPool};
-use tokio::net::udp::RecvHalf;
 use std::marker::PhantomData;
 
 #[cfg(not(target_os = "windows"))]
@@ -27,7 +26,7 @@ pub const BUFF_MAX_SIZE: usize = 4096;
 /// UDP SOCKET 上下文,包含 id, 和Pees, 用于收发数据
 pub struct UdpContext<T> {
     pub id: usize,
-    recv: RefCell<Option<RecvHalf>>,
+    recv: RefCell<Option<Arc<UdpSocket>>>,
     pub send: SendPool,
     pub peers: RefCell<HashMap<SocketAddr, Arc<Peer<T>>>>,
 }
@@ -225,11 +224,11 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
 
         let mut id = 1;
         for udp in udp_list {
-            let (recv, send) = udp.split();
+            let udp_ptr = Arc::new(udp);
             udp_map.push(UdpContext {
                 id,
-                recv:RefCell::new(Some(recv)),
-                send: SendPool::new(send),
+                recv:RefCell::new(Some(udp_ptr.clone())),
+                send: SendPool::new(udp_ptr),
                 peers: RefCell::new(HashMap::new()),
             });
             id += 1;
@@ -297,7 +296,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
             let (tx, mut rx) = unbounded_channel();
             for (index, udp_sock) in self.udp_contexts.iter().enumerate() {
                 let recv_sock = udp_sock.recv.borrow_mut().take();
-                if let Some(mut recv_sock) = recv_sock {
+                if let Some(recv_sock) = recv_sock {
                     let move_data_tx = tx.clone();
                     let error_input=err_input.clone();
                     tokio::spawn(async move {
@@ -324,7 +323,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                     });
                 }
             }
-
+            drop(tx);
             while let Some((index,  addr, data)) = rx.recv().await {
                 let udp_content = self.udp_contexts.get(index).unwrap();
                 let peer = udp_content.peers.borrow_mut().entry(addr).or_insert_with(|| {
