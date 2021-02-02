@@ -61,7 +61,7 @@ async fn test_udp_inner_server(){
     let ph= a.start();
 
 
-    let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     sender.connect("127.0.0.1:5555").await.unwrap();
     let message = b"hello!";
     for _ in 0..10 {
@@ -114,7 +114,7 @@ async fn test_udp_new_server() {
     });
 
 
-    let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     sender.connect("127.0.0.1:6666").await.unwrap();
     let message = b"hello!";
     for _ in 0..1000 {

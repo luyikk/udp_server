@@ -185,6 +185,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 创建tokio的udpsocket ,从std 创建
     fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> Result<UdpSocket, Box<dyn Error>> {
         let std_sock = Self::create_udp_socket(&addr)?;
+        std_sock.set_nonblocking(true)?;
         let sock = UdpSocket::try_from(std_sock)?;
         Ok(sock)
     }
@@ -302,21 +303,20 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                     tokio::spawn(async move {
                         let mut buff = [0; BUFF_MAX_SIZE];
                         loop {
-                            let res = {
-                                recv_sock.recv_from(&mut buff).await
-                            };
-
-                            if let Ok((size, addr)) = res {
-                                if let Err(er) = move_data_tx.send((index, addr, buff[..size].to_vec())) {
+                            match  recv_sock.recv_from(&mut buff).await {
+                                Ok((size, addr)) => {
+                                    if let Err(er) = move_data_tx.send((index, addr, buff[..size].to_vec())) {
+                                        let error = error_input.lock().await;
+                                        let _ = error(None, Box::new(er));
+                                        break;
+                                    }
+                                },
+                                Err(er) => {
                                     let error = error_input.lock().await;
-                                    let _ = error(None, Box::new(er));
-                                    break;
-                                }
-                            } else if let Err(er) = res {
-                                let error = error_input.lock().await;
-                                let stop = error(None, error::Error::IOError(er).into());
-                                if stop {
-                                    return;
+                                    let stop = error(None, error::Error::IOError(er).into());
+                                    if stop {
+                                        return;
+                                    }
                                 }
                             }
                         }
@@ -334,7 +334,6 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
                         udp_sock: udp_content.send.get_tx()
                     })
                 }).clone();
-
 
                 let res = input(self.inner.clone(), peer.clone(), data).await;
                 if let Err(er) = res {
