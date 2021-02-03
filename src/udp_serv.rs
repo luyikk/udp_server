@@ -220,9 +220,7 @@ impl<I, R, T, S> UdpServer<I, R, T, S>
     /// 已达到 M级的DPS 数量
     pub async fn new_inner<A: ToSocketAddrs>(addr: A, inner:Arc<S>) -> Result<Self, Box<dyn Error>> {
         let udp_list = Self::create_udp_socket_list(&addr, Self::get_cpu_count())?;
-
         let mut udp_map = vec![];
-
         let mut id = 1;
         for udp in udp_list {
             let udp_ptr = Arc::new(udp);
