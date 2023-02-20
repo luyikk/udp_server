@@ -1,3 +1,4 @@
+use async_lock::Mutex;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
@@ -6,9 +7,9 @@ use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
-use async_lock::Mutex;
+use std::time::Duration;
 
-use crate::peer::{ IUdpPeerPushData, UDPPeer, UdpPeer};
+use crate::peer::{IUdpPeer, IUdpPeerPushData, UDPPeer, UdpPeer};
 use net2::{UdpBuilder, UdpSocketExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
@@ -33,6 +34,7 @@ pub struct UdpServer<I, T> {
     udp_contexts: Vec<Arc<UdpContext>>,
     input: Arc<I>,
     _ph: PhantomData<T>,
+    clean_sec: Option<u64>,
 }
 
 impl<I, R, T> UdpServer<I, T>
@@ -41,6 +43,7 @@ where
     R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
     T: Sync + Send + Clone + 'static,
 {
+    /// new udp server
     pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
         let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
         let udp_contexts = udp_list
@@ -58,9 +61,18 @@ where
             udp_contexts,
             input: Arc::new(input),
             _ph: Default::default(),
+            clean_sec: None,
         })
     }
 
+    /// set how long the packet is not obtained and close the udp peer
+    #[inline]
+    pub fn set_clean_sec(mut self, sec: u64) -> UdpServer<I, T> {
+        self.clean_sec = Some(sec);
+        self
+    }
+
+    /// start server
     #[inline]
     pub async fn start(&self, inner: T) -> io::Result<()> {
         let (tx, mut rx) = unbounded_channel();
@@ -82,7 +94,10 @@ where
                                     .or_insert_with(|| {
                                         let peer =
                                             UdpPeer::new(index, udp_context.recv.clone(), addr);
-                                        if let Err(err) = send_create_peer_tx.send((peer.clone(),index,addr)) {
+                                        log::debug!("create udp listen:{index} udp peer:{addr}");
+                                        if let Err(err) =
+                                            send_create_peer_tx.send((peer.clone(), index, addr))
+                                        {
                                             panic!("send_create_peer_tx err:{}", err);
                                         }
                                         peer
@@ -102,15 +117,44 @@ where
             });
         }
         drop(tx);
-        while let Some((peer,index,addr)) = rx.recv().await {
+
+        if let Some(clean_sec) = self.clean_sec {
+            let contexts = self.udp_contexts.clone();
+            tokio::spawn(async move {
+                loop {
+                    let mut clean_peer = vec![];
+                    for context in contexts.iter() {
+                        context.peers.lock().await.retain(|_, p| {
+                            if p.get_last_recv_sec() < clean_sec {
+                                true
+                            } else {
+                                clean_peer.push(p.clone());
+                                false
+                            }
+                        });
+                    }
+
+                    for peer in clean_peer {
+                        peer.close().await
+                    }
+
+                    tokio::time::sleep(Duration::from_secs(1)).await
+                }
+            });
+        }
+
+        while let Some((peer, index, addr)) = rx.recv().await {
             let inner = inner.clone();
             let input_fn = self.input.clone();
-            let context=self.udp_contexts.get(index).expect("not found context").clone();
+            let context = self
+                .udp_contexts
+                .get(index)
+                .expect("not found context")
+                .clone();
             tokio::spawn(async move {
                 if let Err(err) = (input_fn)(peer, inner).await {
                     log::error!("udp input error:{err}")
                 }
-
                 context.peers.lock().await.remove(&addr);
             });
         }
