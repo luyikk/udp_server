@@ -149,6 +149,7 @@ fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket
 ///It is used to create udp sockets for non-windows. The difference from windows is that reuse_port
 #[cfg(not(target_os = "windows"))]
 fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+    use net2::unix::UnixUdpBuilderExt;
     let addr = {
         let mut addrs = addr.to_socket_addrs()?;
         let addr = match addrs.next() {
