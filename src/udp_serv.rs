@@ -28,14 +28,15 @@ pub struct UdpContext {
 /// UDP Server listen
 pub struct UdpServer<I, T> {
     udp_contexts: Vec<UdpContext>,
-    input: I,
+    input: Arc<I>,
     _ph: PhantomData<T>,
 }
 
 impl<I, R, T> UdpServer<I, T>
 where
-    I: Fn(UDPPeer, Vec<u8>, &T) -> R + Send + Sync + 'static,
+    I: Fn(UDPPeer, Vec<u8>, T) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
+    T: Sync + Send + Copy + 'static,
 {
     pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
         let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
@@ -50,7 +51,7 @@ where
             .collect();
         Ok(UdpServer {
             udp_contexts,
-            input,
+            input:Arc::new(input),
             _ph: Default::default(),
         })
     }
@@ -105,9 +106,13 @@ where
                     .clone()
             };
 
-            if let Err(err) = (self.input)(peer, data, &inner).await {
-                log::error!("udp input error:{err}")
-            }
+            let inner = inner.clone();
+            let input_fn = self.input.clone();
+            tokio::spawn(async move {
+                if let Err(err) = (input_fn)(peer, data, inner).await {
+                    log::error!("udp input error:{err}")
+                }
+            });
         }
         Ok(())
     }
