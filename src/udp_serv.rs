@@ -6,9 +6,9 @@ use std::io;
 use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
-
-use crate::peer::{UDPPeer, UdpPeer};
 use async_lock::Mutex;
+
+use crate::peer::{ IUdpPeerPushData, UDPPeer, UdpPeer};
 use net2::{UdpBuilder, UdpSocketExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
@@ -25,65 +25,73 @@ pub struct UdpContext {
     pub peers: Mutex<HashMap<SocketAddr, UDPPeer>>,
 }
 
+unsafe impl Send for UdpContext {}
+unsafe impl Sync for UdpContext {}
+
 /// UDP Server listen
 pub struct UdpServer<I, T> {
-    udp_contexts: Vec<UdpContext>,
+    udp_contexts: Vec<Arc<UdpContext>>,
     input: Arc<I>,
     _ph: PhantomData<T>,
 }
 
 impl<I, R, T> UdpServer<I, T>
 where
-    I: Fn(UDPPeer, Vec<u8>, T) -> R + Send + Sync + 'static,
+    I: Fn(UDPPeer, T) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
-    T: Sync + Send + Copy + 'static,
+    T: Sync + Send + Clone + 'static,
 {
     pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
         let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
         let udp_contexts = udp_list
             .into_iter()
             .enumerate()
-            .map(|(id, socket)| UdpContext {
-                id,
-                recv: Arc::new(socket),
-                peers: Default::default(),
+            .map(|(id, socket)| {
+                Arc::new(UdpContext {
+                    id,
+                    recv: Arc::new(socket),
+                    peers: Default::default(),
+                })
             })
             .collect();
         Ok(UdpServer {
             udp_contexts,
-            input:Arc::new(input),
+            input: Arc::new(input),
             _ph: Default::default(),
         })
-    }
-
-    /// remove peer clean memory
-    #[inline]
-    pub async fn remove_peer(&self, addr: SocketAddr) -> bool {
-        for udp_server in self.udp_contexts.iter() {
-            if udp_server.peers.lock().await.remove(&addr).is_some() {
-                return true;
-            }
-        }
-        false
     }
 
     #[inline]
     pub async fn start(&self, inner: T) -> io::Result<()> {
         let (tx, mut rx) = unbounded_channel();
         for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
-            let send_data_tx = tx.clone();
-            let udp_socket = udp_listen.recv.clone();
+            let send_create_peer_tx = tx.clone();
+            let udp_context = udp_listen.clone();
             tokio::spawn(async move {
                 log::debug!("start udp listen:{index}");
                 let mut buff = [0; BUFF_MAX_SIZE];
                 loop {
-                    match udp_socket.recv_from(&mut buff).await {
+                    match udp_context.recv.recv_from(&mut buff).await {
                         Ok((size, addr)) => {
-                            if let Err(err) =
-                                send_data_tx.send((index, addr, buff[..size].to_vec()))
-                            {
-                                log::error!("send_data_tx is error:{err}");
-                                break;
+                            let peer = {
+                                udp_context
+                                    .peers
+                                    .lock()
+                                    .await
+                                    .entry(addr)
+                                    .or_insert_with(|| {
+                                        let peer =
+                                            UdpPeer::new(index, udp_context.recv.clone(), addr);
+                                        if let Err(err) = send_create_peer_tx.send((peer.clone(),index,addr)) {
+                                            panic!("send_create_peer_tx err:{}", err);
+                                        }
+                                        peer
+                                    })
+                                    .clone()
+                            };
+
+                            if let Err(err) = peer.push_data(buff[..size].to_vec()).await {
+                                log::error!("peer push data is error:{err}");
                             }
                         }
                         Err(err) => {
@@ -94,24 +102,16 @@ where
             });
         }
         drop(tx);
-        while let Some((index, addr, data)) = rx.recv().await {
-            let peer = {
-                let context = self.udp_contexts.get(index).unwrap();
-                context
-                    .peers
-                    .lock()
-                    .await
-                    .entry(addr)
-                    .or_insert_with(|| UdpPeer::new(index, context.recv.clone(), addr))
-                    .clone()
-            };
-
+        while let Some((peer,index,addr)) = rx.recv().await {
             let inner = inner.clone();
             let input_fn = self.input.clone();
+            let context=self.udp_contexts.get(index).expect("not found context").clone();
             tokio::spawn(async move {
-                if let Err(err) = (input_fn)(peer, data, inner).await {
+                if let Err(err) = (input_fn)(peer, inner).await {
                     log::error!("udp input error:{err}")
                 }
+
+                context.peers.lock().await.remove(&addr);
             });
         }
         Ok(())
