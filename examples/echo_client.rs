@@ -47,7 +47,7 @@ struct Opt{
 
 
 async fn run(addr:&str, time:u64)->anyhow::Result<()>{
-    let sender =Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    let sender =Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
     sender.connect(addr).await?;
 
     let reader=sender.clone();
