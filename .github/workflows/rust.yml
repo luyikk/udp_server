@@ -48,7 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Run cargo test
-        run: cargo test --features tokio_time
+        run: cargo test
 
   lints:
     name: Lints

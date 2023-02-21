@@ -123,8 +123,8 @@ where
             tokio::spawn(async move {
                 loop {
                     for context in contexts.iter() {
-                        context.peers.lock().await.values().for_each(|peer|{
-                            if peer.get_last_recv_sec()>clean_sec {
+                        context.peers.lock().await.values().for_each(|peer| {
+                            if peer.get_last_recv_sec() > clean_sec {
                                 peer.close();
                             }
                         });

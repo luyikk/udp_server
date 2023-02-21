@@ -1,6 +1,12 @@
 # udp_server
 fast rust udp server
 
+[![Latest Version](https://img.shields.io/crates/v/udp_server.svg)](https://crates.io/crates/udp_server)
+[![Rust Documentation](https://img.shields.io/badge/api-rustdoc-blue.svg)](https://docs.rs/udp_server)
+[![Rust Report Card](https://rust-reportcard.xuri.me/badge/github.com/luyikk/udp_server)](https://rust-reportcard.xuri.me/report/github.com/luyikk/udp_server)
+[![Rust CI](https://github.com/luyikk/udp_server/actions/workflows/rust.yml/badge.svg)](https://github.com/luyikk/udp_server/actions/workflows/rust.yml)
+
+
 ## Examples echo
 ```rust
 use anyhow::Context;
