@@ -68,7 +68,7 @@ pub trait IUdpPeer {
     /// get read rx
     async fn get_reader(&self) -> Option<UnboundedReceiver<io::Result<Vec<u8>>>>;
     /// close peer
-    async fn close(&self);
+    fn close(&self);
 }
 
 #[async_trait::async_trait]
@@ -91,17 +91,15 @@ impl IUdpPeer for Actor<UdpPeer> {
     }
 
     #[inline]
-    async fn close(&self) {
+    fn close(&self) {
         unsafe {
             if let Err(err) = self
                 .deref_inner()
                 .tx
-                .send(Err(io::Error::new(ErrorKind::BrokenPipe, "peer is close")))
+                .send(Err(io::Error::new(ErrorKind::TimedOut, "udp peer is timeout")))
             {
-                log::error!("close peer:{} error:{err}", self.get_addr());
+                log::error!("send timeout to udp peer:{} error:{err}", self.get_addr());
             }
-
-            self.deref_inner().tx.closed().await;
         }
     }
 }

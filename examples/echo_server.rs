@@ -14,7 +14,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Ok(())
     })?
-    .set_clean_sec(20)
+    .set_peer_timeout_sec(20)
     .start(())
     .await?;
 
