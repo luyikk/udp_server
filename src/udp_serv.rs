@@ -122,22 +122,6 @@ where
             let contexts = self.udp_contexts.clone();
             tokio::spawn(async move {
                 loop {
-                    // let mut clean_peer = vec![];
-                    // for context in contexts.iter() {
-                    //     context.peers.lock().await.retain(|_, p| {
-                    //         if p.get_last_recv_sec() < clean_sec {
-                    //             true
-                    //         } else {
-                    //             clean_peer.push(p.clone());
-                    //             false
-                    //         }
-                    //     });
-                    // }
-                    //
-                    // for peer in clean_peer {
-                    //     peer.close().await
-                    // }
-
                     for context in contexts.iter() {
                         context.peers.lock().await.values().for_each(|peer|{
                             if peer.get_last_recv_sec()>clean_sec {
@@ -145,7 +129,6 @@ where
                             }
                         });
                     }
-
                     tokio::time::sleep(Duration::from_secs(1)).await
                 }
             });
