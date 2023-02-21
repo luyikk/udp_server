@@ -1,4 +1,3 @@
-use anyhow::Context;
 use log::LevelFilter;
 use udp_server::prelude::{IUdpPeer, UdpServer};
 
@@ -7,8 +6,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::Builder::new()
         .filter_level(LevelFilter::Debug)
         .init();
-    UdpServer::new("0.0.0.0:20001", |peer, _| async move {
-        let mut reader = peer.get_reader().await.context("not reader")?;
+    UdpServer::new("0.0.0.0:20001", |peer, mut reader, _| async move {
         while let Some(Ok(data)) = reader.recv().await {
             peer.send(&data).await?;
         }

@@ -9,7 +9,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::peer::{IUdpPeer, IUdpPeerPushData, UDPPeer, UdpPeer};
+use crate::peer::{IUdpPeer, IUdpPeerPushData, UDPPeer, UdpPeer, UdpReader};
 use net2::{UdpBuilder, UdpSocketExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
@@ -39,7 +39,7 @@ pub struct UdpServer<I, T> {
 
 impl<I, R, T> UdpServer<I, T>
 where
-    I: Fn(UDPPeer, T) -> R + Send + Sync + 'static,
+    I: Fn(UDPPeer, UdpReader, T) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
     T: Sync + Send + Clone + 'static,
 {
@@ -98,7 +98,7 @@ where
 
         let (tx, mut rx) = unbounded_channel();
         for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
-            let send_create_peer_tx = tx.clone();
+            let create_peer_tx = tx.clone();
             let udp_context = udp_listen.clone();
             tokio::spawn(async move {
                 log::debug!("start udp listen:{index}");
@@ -113,13 +113,16 @@ where
                                     .await
                                     .entry(addr)
                                     .or_insert_with(|| {
-                                        let peer =
+                                        let (peer, reader) =
                                             UdpPeer::new(index, udp_context.recv.clone(), addr);
-                                        log::debug!("create udp listen:{index} udp peer:{addr}");
-                                        if let Err(err) =
-                                            send_create_peer_tx.send((peer.clone(), index, addr))
-                                        {
-                                            panic!("send_create_peer_tx err:{}", err);
+                                        log::trace!("create udp listen:{index} udp peer:{addr}");
+                                        if let Err(err) = create_peer_tx.send((
+                                            peer.clone(),
+                                            reader,
+                                            index,
+                                            addr,
+                                        )) {
+                                            panic!("create_peer_tx err:{}", err);
                                         }
                                         peer
                                     })
@@ -146,7 +149,7 @@ where
         }
         drop(tx);
 
-        while let Some((peer, index, addr)) = rx.recv().await {
+        while let Some((peer, reader, index, addr)) = rx.recv().await {
             let inner = inner.clone();
             let input_fn = self.input.clone();
             let context = self
@@ -155,7 +158,7 @@ where
                 .expect("not found context")
                 .clone();
             tokio::spawn(async move {
-                if let Err(err) = (input_fn)(peer, inner).await {
+                if let Err(err) = (input_fn)(peer, reader, inner).await {
                     log::error!("udp input error:{err}")
                 }
                 context.peers.lock().await.remove(&addr);
@@ -167,28 +170,7 @@ where
 
 ///Create udp socket for windows
 #[cfg(target_os = "windows")]
-fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
-    let addr = {
-        let mut addrs = addr.to_socket_addrs()?;
-        let addr = match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "no socket addresses could be resolved",
-                ))
-            }
-        };
-        if addrs.next().is_none() {
-            Ok(addr)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "more than one address resolved",
-            ))
-        }
-    };
-    let addr: SocketAddr = addr?;
+fn make_udp_client(addr: SocketAddr) -> io::Result<std::net::UdpSocket> {
     if addr.is_ipv4() {
         Ok(UdpBuilder::new_v4()?.reuse_address(true)?.bind(addr)?)
     } else if addr.is_ipv6() {
@@ -200,29 +182,8 @@ fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket
 
 ///It is used to create udp sockets for non-windows. The difference from windows is that reuse_port
 #[cfg(not(target_os = "windows"))]
-fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+fn make_udp_client(addr: SocketAddr) -> io::Result<std::net::UdpSocket> {
     use net2::unix::UnixUdpBuilderExt;
-    let addr = {
-        let mut addrs = addr.to_socket_addrs()?;
-        let addr = match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "no socket addresses could be resolved",
-                ))
-            }
-        };
-        if addrs.next().is_none() {
-            Ok(addr)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "more than one address resolved",
-            ))
-        }
-    };
-    let addr: SocketAddr = addr?;
     if addr.is_ipv4() {
         Ok(UdpBuilder::new_v4()?
             .reuse_address(true)?
@@ -240,7 +201,27 @@ fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket
 
 ///Create a udp socket and set the buffer size
 fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
-    let res = make_udp_client(addr)?;
+    let addr = {
+        let mut addrs = addr.to_socket_addrs()?;
+        let addr = match addrs.next() {
+            Some(addr) => addr,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "no socket addresses could be resolved",
+                ))
+            }
+        };
+        if addrs.next().is_none() {
+            Ok(addr)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "more than one address resolved",
+            ))
+        }
+    };
+    let res = make_udp_client(addr?)?;
     res.set_send_buffer_size(1784 * 10000)?;
     res.set_recv_buffer_size(1784 * 10000)?;
     Ok(res)
