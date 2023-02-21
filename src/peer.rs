@@ -110,7 +110,9 @@ pub(crate) trait IUdpPeerPushData {
     /// get socket id
     fn get_socket_id(&self) -> usize;
     /// push data to read tx
-    async fn push_data(&self, buf: Vec<u8>) -> io::Result<()>;
+    fn push_data(&self, buf: Vec<u8>) -> io::Result<()>;
+    /// push data to read tx and update instant
+    async fn push_data_and_update_instant(&self, buf: Vec<u8>) -> io::Result<()>;
 }
 
 #[async_trait::async_trait]
@@ -126,15 +128,22 @@ impl IUdpPeerPushData for Actor<UdpPeer> {
     }
 
     #[inline]
-    async fn push_data(&self, buf: Vec<u8>) -> io::Result<()> {
-        self.inner_call(|inner| async move {
-            inner.get_mut().last_read_time = Instant::now();
-            if let Err(err) = inner.get().tx.send(Ok(buf)) {
+    fn push_data(&self, buf: Vec<u8>) -> io::Result<()> {
+        unsafe {
+            if let Err(err) = self.deref_inner().tx.send(Ok(buf)) {
                 Err(io::Error::new(ErrorKind::Other, err))
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[inline]
+    async fn push_data_and_update_instant(&self, buf: Vec<u8>) -> io::Result<()> {
+        self.inner_call(|inner| async move {
+            inner.get_mut().last_read_time = Instant::now();
         })
-        .await
+        .await;
+        self.push_data(buf)
     }
 }

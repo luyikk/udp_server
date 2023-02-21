@@ -75,6 +75,27 @@ where
     /// start server
     #[inline]
     pub async fn start(&self, inner: T) -> io::Result<()> {
+        let need_check_timeout = {
+            if let Some(clean_sec) = self.clean_sec {
+                let contexts = self.udp_contexts.clone();
+                tokio::spawn(async move {
+                    loop {
+                        for context in contexts.iter() {
+                            context.peers.lock().await.values().for_each(|peer| {
+                                if peer.get_last_recv_sec() > clean_sec {
+                                    peer.close();
+                                }
+                            });
+                        }
+                        tokio::time::sleep(Duration::from_secs(1)).await
+                    }
+                });
+                true
+            } else {
+                false
+            }
+        };
+
         let (tx, mut rx) = unbounded_channel();
         for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
             let send_create_peer_tx = tx.clone();
@@ -105,7 +126,14 @@ where
                                     .clone()
                             };
 
-                            if let Err(err) = peer.push_data(buff[..size].to_vec()).await {
+                            if need_check_timeout {
+                                if let Err(err) = peer
+                                    .push_data_and_update_instant(buff[..size].to_vec())
+                                    .await
+                                {
+                                    log::error!("peer push data and update instant is error:{err}");
+                                }
+                            } else if let Err(err) = peer.push_data(buff[..size].to_vec()) {
                                 log::error!("peer push data is error:{err}");
                             }
                         }
@@ -117,22 +145,6 @@ where
             });
         }
         drop(tx);
-
-        if let Some(clean_sec) = self.clean_sec {
-            let contexts = self.udp_contexts.clone();
-            tokio::spawn(async move {
-                loop {
-                    for context in contexts.iter() {
-                        context.peers.lock().await.values().for_each(|peer| {
-                            if peer.get_last_recv_sec() > clean_sec {
-                                peer.close();
-                            }
-                        });
-                    }
-                    tokio::time::sleep(Duration::from_secs(1)).await
-                }
-            });
-        }
 
         while let Some((peer, index, addr)) = rx.recv().await {
             let inner = inner.clone();
