@@ -116,12 +116,9 @@ where
                                         let (peer, reader) =
                                             UdpPeer::new(index, udp_context.recv.clone(), addr);
                                         log::trace!("create udp listen:{index} udp peer:{addr}");
-                                        if let Err(err) = create_peer_tx.send((
-                                            peer.clone(),
-                                            reader,
-                                            index,
-                                            addr,
-                                        )) {
+                                        if let Err(err) =
+                                            create_peer_tx.send((peer.clone(), reader, index, addr))
+                                        {
                                             panic!("create_peer_tx err:{}", err);
                                         }
                                         peer
