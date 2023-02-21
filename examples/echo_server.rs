@@ -1,8 +1,3 @@
-# udp_server
-fast rust udp server
-
-## Examples echo
-```rust
 use anyhow::Context;
 use log::LevelFilter;
 use udp_server::prelude::{IUdpPeer, UdpServer};
@@ -19,11 +14,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Ok(())
     })?
-        .set_clean_sec(20)
-        .start(())
-        .await?;
+    .set_peer_timeout_sec(20)
+    .start(())
+    .await?;
 
     Ok(())
 }
-
-```

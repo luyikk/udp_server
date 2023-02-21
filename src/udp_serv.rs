@@ -1,351 +1,285 @@
-use crate::error;
-use net2::{UdpBuilder, UdpSocketExt};
+use async_lock::Mutex;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
+use std::io;
+use std::marker::PhantomData;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
+
+use crate::peer::{IUdpPeer, IUdpPeerPushData, UDPPeer, UdpPeer};
+use net2::{UdpBuilder, UdpSocketExt};
 use tokio::net::UdpSocket;
-use tokio::sync::Mutex;
 use tokio::sync::mpsc::unbounded_channel;
-use std::cell::RefCell;
-use crate::send::{SendUDP, SendPool};
-use std::marker::PhantomData;
 
-#[cfg(not(target_os = "windows"))]
-use net2::unix::UnixUdpBuilderExt;
-
-
-
-/// UDP 单个包最大大小,默认4096 主要看MTU一般不会超过1500在internet 上
-/// 如果局域网有可能大点,4096一般够用.
+///The maximum size of a single UDP packet is 4096 by default. The MTU is generally not more than 1500 on the Internet
+///If the LAN is likely to be larger, 4096 is generally enough
 pub const BUFF_MAX_SIZE: usize = 4096;
 
-
-/// UDP SOCKET 上下文,包含 id, 和Pees, 用于收发数据
-pub struct UdpContext<T> {
+/// UDP Context
+/// each bind will create a
+pub struct UdpContext {
     pub id: usize,
-    recv: RefCell<Option<Arc<UdpSocket>>>,
-    pub send: SendPool,
-    pub peers: RefCell<HashMap<SocketAddr, Arc<Peer<T>>>>,
+    recv: Arc<UdpSocket>,
+    pub peers: Mutex<HashMap<SocketAddr, UDPPeer>>,
 }
 
-unsafe  impl<T> Send for UdpContext<T>{}
-unsafe  impl<T> Sync for  UdpContext<T>{}
+unsafe impl Send for UdpContext {}
+unsafe impl Sync for UdpContext {}
 
-/// 错误输入类型
-pub type ErrorInput<T>=Arc<Mutex<dyn Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send>>;
+/// UDP Server listen
+pub struct UdpServer<I, T> {
+    udp_contexts: Vec<Arc<UdpContext>>,
+    input: Arc<I>,
+    _ph: PhantomData<T>,
+    clean_sec: Option<u64>,
+}
 
-/// UDP 服务器对象
-/// I 用来限制必须input的FN 原型,
-/// R 用来限制 必须input的是 异步函数
-/// T 用来设置返回值
-///
-/// # Examples
-/// ```
-/// #![feature(async_closure)]
-/// use udp_server::UdpServer;
-/// use tokio::net::UdpSocket;
-/// use std::sync::Arc;
-/// use tokio::sync::Mutex;
-///
-/// #[tokio::main]
-/// async fn main() {
-///    let mut a = UdpServer::new("127.0.0.1:5555").await.unwrap();
-///    a.set_input(async move |_,peer,data|{
-///         let mut token = peer.token.lock().await;
-///         match token.get() {
-///             Some(x)=>{
-///                 *x+=1;
-///                 }
-///             None=>{
-///                 token.set(Some(1));
-///             }
-///         }
-///         peer.send(data).await?;
-///         Err("stop it".into())
-///     });
-///
-///  let mut sender = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-///  sender.connect("127.0.0.1:5555").await.unwrap();
-///  let message = b"hello!";
-///  for _ in 0..100 {
-///     sender.send(message).await.unwrap();
-///  }
-///
-///  a.start().await.unwrap();
-/// }
-///
-///
-/// ```
-pub struct UdpServer<I, R, T,S>
+impl<I, R, T> UdpServer<I, T>
+where
+    I: Fn(UDPPeer, T) -> R + Send + Sync + 'static,
+    R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
+    T: Sync + Send + Clone + 'static,
 {
-    inner:Arc<S>,
-    udp_contexts: Vec<UdpContext<T>>,
-    input: Option<Arc<I>>,
-    error_input: Option<ErrorInput<T>>,
-    phantom:PhantomData<R>
-}
-
-
-
-/// 用来存储Token
-#[derive(Debug)]
-pub struct TokenStore<T>(pub Option<T>);
-
-impl<T:Send> TokenStore<T>{
-    pub fn have(&self)->bool{
-        self.0.is_some()
+    /// new udp server
+    pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
+        let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
+        let udp_contexts = udp_list
+            .into_iter()
+            .enumerate()
+            .map(|(id, socket)| {
+                Arc::new(UdpContext {
+                    id,
+                    recv: Arc::new(socket),
+                    peers: Default::default(),
+                })
+            })
+            .collect();
+        Ok(UdpServer {
+            udp_contexts,
+            input: Arc::new(input),
+            _ph: Default::default(),
+            clean_sec: None,
+        })
     }
 
-    pub fn get(&mut self)->Option<&mut T> {
-        self.0.as_mut()
+    /// set how long the packet is not obtained and close the udp peer
+    #[inline]
+    pub fn set_peer_timeout_sec(mut self, sec: u64) -> UdpServer<I, T> {
+        self.clean_sec = Some(sec);
+        self
     }
 
-    pub fn set(&mut self,v:Option<T>) {
-        self.0 = v;
-    }
-}
+    /// start server
+    #[inline]
+    pub async fn start(&self, inner: T) -> io::Result<()> {
+        let (tx, mut rx) = unbounded_channel();
+        for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
+            let send_create_peer_tx = tx.clone();
+            let udp_context = udp_listen.clone();
+            tokio::spawn(async move {
+                log::debug!("start udp listen:{index}");
+                let mut buff = [0; BUFF_MAX_SIZE];
+                loop {
+                    match udp_context.recv.recv_from(&mut buff).await {
+                        Ok((size, addr)) => {
+                            let peer = {
+                                udp_context
+                                    .peers
+                                    .lock()
+                                    .await
+                                    .entry(addr)
+                                    .or_insert_with(|| {
+                                        let peer =
+                                            UdpPeer::new(index, udp_context.recv.clone(), addr);
+                                        log::debug!("create udp listen:{index} udp peer:{addr}");
+                                        if let Err(err) =
+                                            send_create_peer_tx.send((peer.clone(), index, addr))
+                                        {
+                                            panic!("send_create_peer_tx err:{}", err);
+                                        }
+                                        peer
+                                    })
+                                    .clone()
+                            };
 
+                            if let Err(err) = peer.push_data(buff[..size].to_vec()).await {
+                                log::error!("peer push data is error:{err}");
+                            }
+                        }
+                        Err(err) => {
+                            log::error!("udp:{index} recv_from error:{err}");
+                        }
+                    }
+                }
+            });
+        }
+        drop(tx);
 
+        if let Some(clean_sec) = self.clean_sec {
+            let contexts = self.udp_contexts.clone();
+            tokio::spawn(async move {
+                loop {
+                    // let mut clean_peer = vec![];
+                    // for context in contexts.iter() {
+                    //     context.peers.lock().await.retain(|_, p| {
+                    //         if p.get_last_recv_sec() < clean_sec {
+                    //             true
+                    //         } else {
+                    //             clean_peer.push(p.clone());
+                    //             false
+                    //         }
+                    //     });
+                    // }
+                    //
+                    // for peer in clean_peer {
+                    //     peer.close().await
+                    // }
 
-/// Peer 对象
-/// 用来标识client
-/// socket_id 标识 所在哪个UDPContent,一般只在头一次接收到数据的时候设置
-/// 一般用来所在Peer位置,linux 服务器上启用了 reuse_port
-/// 所以后续收到数据包不一定来自于此 所在哪个UDPContent
-/// 而windows上只有一个socket,所以始终只有1个
-/// # token
-/// 你可以自定义放一些和用户有关的数据,这样的话方便你对用户进行区别,已提取用户逻辑数据
-#[derive(Debug)]
-pub struct Peer<T> {
-    pub socket_id: usize,
-    pub addr: SocketAddr,
-    pub token: Arc<Mutex<TokenStore<T>>>,
-    pub udp_sock: SendUDP,
-}
+                    for context in contexts.iter() {
+                        context.peers.lock().await.values().for_each(|peer|{
+                            if peer.get_last_recv_sec()>clean_sec {
+                                peer.close();
+                            }
+                        });
+                    }
 
+                    tokio::time::sleep(Duration::from_secs(1)).await
+                }
+            });
+        }
 
-impl<T: Send> Peer<T> {
-    /// Send 发送数据包
-    /// 作为最基本的函数之一,它采用了tokio的async send_to
-    /// 首先,他会去弱指针里面拿到强指针,如果没有他会爆错
-    pub async fn send(&self, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        self.udp_sock.send((data,self.addr))?;
+        while let Some((peer, index, addr)) = rx.recv().await {
+            let inner = inner.clone();
+            let input_fn = self.input.clone();
+            let context = self
+                .udp_contexts
+                .get(index)
+                .expect("not found context")
+                .clone();
+            tokio::spawn(async move {
+                if let Err(err) = (input_fn)(peer, inner).await {
+                    log::error!("udp input error:{err}")
+                }
+                context.peers.lock().await.remove(&addr);
+            });
+        }
         Ok(())
     }
 }
 
-impl <I,R,T> UdpServer<I,R,T,()>  where
-    I: Fn(Arc<()>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
-    R: Future<Output = Result<(), Box<dyn Error>>> + Send,
-    T: Send + 'static{
-
-    pub async fn new<A: ToSocketAddrs>(addr:A)->Result<Self, Box<dyn Error>> {
-        Self::new_inner(addr,Arc::new(())).await
+///Create udp socket for windows
+#[cfg(target_os = "windows")]
+fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+    let addr = {
+        let mut addrs = addr.to_socket_addrs()?;
+        let addr = match addrs.next() {
+            Some(addr) => addr,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "no socket addresses could be resolved",
+                ))
+            }
+        };
+        if addrs.next().is_none() {
+            Ok(addr)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "more than one address resolved",
+            ))
+        }
+    };
+    let addr: SocketAddr = addr?;
+    if addr.is_ipv4() {
+        Ok(UdpBuilder::new_v4()?.reuse_address(true)?.bind(addr)?)
+    } else if addr.is_ipv6() {
+        Ok(UdpBuilder::new_v6()?.reuse_address(true)?.bind(addr)?)
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"))
     }
 }
 
-impl<I, R, T, S> UdpServer<I, R, T, S>
-    where
-        I: Fn(Arc<S>,Arc<Peer<T>>, Vec<u8>) -> R + Send + Sync + 'static,
-        R: Future<Output = Result<(), Box<dyn Error>>> + Send,
-        T: Send + 'static,
-        S: Sync +Send + 'static{
-    ///用于非windows 创建socket,和windows的区别在于开启了 reuse_port
-    #[cfg(not(target_os = "windows"))]
-    fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> Result<std::net::UdpSocket, Box<dyn Error>> {
-        let res = UdpBuilder::new_v4()?
+///It is used to create udp sockets for non-windows. The difference from windows is that reuse_port
+#[cfg(not(target_os = "windows"))]
+fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+    use net2::unix::UnixUdpBuilderExt;
+    let addr = {
+        let mut addrs = addr.to_socket_addrs()?;
+        let addr = match addrs.next() {
+            Some(addr) => addr,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "no socket addresses could be resolved",
+                ))
+            }
+        };
+        if addrs.next().is_none() {
+            Ok(addr)
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::Other,
+                "more than one address resolved",
+            ))
+        }
+    };
+    let addr: SocketAddr = addr?;
+    if addr.is_ipv4() {
+        Ok(UdpBuilder::new_v4()?
             .reuse_address(true)?
             .reuse_port(true)?
-            .bind(addr)?;
-        Ok(res)
+            .bind(addr)?)
+    } else if addr.is_ipv6() {
+        Ok(UdpBuilder::new_v6()?
+            .reuse_address(true)?
+            .reuse_port(true)?
+            .bind(addr)?)
+    } else {
+        Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"))
     }
+}
 
+///Create a udp socket and set the buffer size
+fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+    let res = make_udp_client(addr)?;
+    res.set_send_buffer_size(1784 * 10000)?;
+    res.set_recv_buffer_size(1784 * 10000)?;
+    Ok(res)
+}
 
+/// From std socket create tokio udp socket
+fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<UdpSocket> {
+    let std_sock = create_udp_socket(&addr)?;
+    std_sock.set_nonblocking(true)?;
+    let sock = UdpSocket::try_from(std_sock)?;
+    Ok(sock)
+}
 
-    ///用于windows创建socket
-    #[cfg(target_os = "windows")]
-    fn make_udp_client<A: ToSocketAddrs>(addr: &A) -> Result<std::net::UdpSocket, Box<dyn Error>> {
-        let res = UdpBuilder::new_v4()?.reuse_address(true)?.bind(addr)?;
-        Ok(res)
+/// create tokio UDP socket list
+/// listen_count indicates how many UDP SOCKETS to listen
+fn create_udp_socket_list<A: ToSocketAddrs>(
+    addr: &A,
+    listen_count: usize,
+) -> io::Result<Vec<UdpSocket>> {
+    log::debug!("cpus:{listen_count}");
+    let mut listens = Vec::with_capacity(listen_count);
+    for _ in 0..listen_count {
+        let sock = create_async_udp_socket(addr)?;
+        listens.push(sock);
     }
+    Ok(listens)
+}
 
-    ///创建udp socket,并设置buffer 大小
-    fn create_udp_socket<A: ToSocketAddrs>(
-        addr: &A,
-    ) -> Result<std::net::UdpSocket, Box<dyn Error>> {
-        let res = Self::make_udp_client(addr)?;
-        res.set_send_buffer_size(1784 * 10000)?;
-        res.set_recv_buffer_size(1784 * 10000)?;
-        Ok(res)
-    }
+#[cfg(not(target_os = "windows"))]
+fn get_cpu_count() -> usize {
+    num_cpus::get()
+}
 
-    /// 创建tokio的udpsocket ,从std 创建
-    fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> Result<UdpSocket, Box<dyn Error>> {
-        let std_sock = Self::create_udp_socket(&addr)?;
-        std_sock.set_nonblocking(true)?;
-        let sock = UdpSocket::try_from(std_sock)?;
-        Ok(sock)
-    }
-
-    /// 创建tikio UDPClient
-    /// listen_count 表示需要监听多少份的UDP SOCKET
-    fn create_udp_socket_list<A: ToSocketAddrs>(
-        addr: &A,
-        listen_count: usize,
-    ) -> Result<Vec<UdpSocket>, Box<dyn Error>> {
-        println!("cpus:{}", listen_count);
-        let mut listens = vec![];
-        for _ in 0..listen_count {
-            let sock = Self::create_async_udp_socket(addr)?;
-            listens.push(sock);
-        }
-        Ok(listens)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    fn get_cpu_count() -> usize {
-        num_cpus::get()
-    }
-
-    #[cfg(target_os = "windows")]
-    fn get_cpu_count() -> usize {
-        1
-    }
-
-    /// 创建UdpServer
-    /// 如果是linux 是系统,他会根据CPU核心数创建等比的UDP SOCKET 监听同一端口
-    /// 已达到 M级的DPS 数量
-    pub async fn new_inner<A: ToSocketAddrs>(addr: A, inner:Arc<S>) -> Result<Self, Box<dyn Error>> {
-        let udp_list = Self::create_udp_socket_list(&addr, Self::get_cpu_count())?;
-        let mut udp_map = vec![];
-        let mut id = 1;
-        for udp in udp_list {
-            let udp_ptr = Arc::new(udp);
-            udp_map.push(UdpContext {
-                id,
-                recv:RefCell::new(Some(udp_ptr.clone())),
-                send: SendPool::new(udp_ptr),
-                peers: RefCell::new(HashMap::new()),
-            });
-            id += 1;
-        }
-
-        Ok(UdpServer {
-            inner,
-            udp_contexts: udp_map,
-            input: None,
-            error_input: None,
-            phantom:PhantomData::default()
-        })
-    }
-
-
-
-    /// 设置收包函数
-    /// 此函数必须符合 async 模式
-    pub fn set_input(&mut self, input: I) {
-        self.input = Some(Arc::new(input));
-    }
-
-    /// 设置错误输出
-    /// 返回bool 如果 true　表示停止服务
-    pub fn set_err_input<P: Fn(Option<Arc<Peer<T>>>, Box<dyn Error>)->bool + Send + 'static>(&mut self, err_input: P) {
-        self.error_input = Some(Arc::new(Mutex::new(err_input)));
-    }
-
-    /// 根据地址删除peer
-    pub fn remove_peer(&self,addr:SocketAddr)->bool{
-        for udp_server in  self.udp_contexts.iter() {
-            if udp_server.peers.borrow_mut().remove(&addr).is_some(){
-                return true;
-            }
-        }
-        false
-    }
-
-    /// 启动服务
-    /// 如果input 发生异常,将会发生错误
-    /// 这个时候回触发 err_input, 如果没有使用 set_err_input 设置错误回调
-    /// 那么 就会输出默认的 err_input,如果输出默认的 err_input 那么整个服务将会停止
-    /// 所以如果不想服务停止,那么必须自己实现 err_input 并且返回 false
-    pub async fn start(&self) -> Result<(), Box<dyn Error>> {
-        if let Some(ref input) = self.input {
-            let err_input = {
-                if let Some(err) = &self.error_input {
-                    let x = err;
-                    x.clone()
-                } else {
-                    Arc::new(Mutex::new(|peer: Option<Arc<Peer<T>>>, err: Box<dyn Error>| {
-                        match peer {
-                            Some(peer) => {
-                                println!("{}-{}", peer.addr, err);
-                            }
-                            None => {
-                                println!("{}", err);
-                            }
-                        }
-                        true
-                    }))
-                }
-            };
-
-            let (tx, mut rx) = unbounded_channel();
-            for (index, udp_sock) in self.udp_contexts.iter().enumerate() {
-                let recv_sock = udp_sock.recv.borrow_mut().take();
-                if let Some(recv_sock) = recv_sock {
-                    let move_data_tx = tx.clone();
-                    let error_input=err_input.clone();
-                    tokio::spawn(async move {
-                        let mut buff = [0; BUFF_MAX_SIZE];
-                        loop {
-                            match  recv_sock.recv_from(&mut buff).await {
-                                Ok((size, addr)) => {
-                                    if let Err(er) = move_data_tx.send((index, addr, buff[..size].to_vec())) {
-                                        let error = error_input.lock().await;
-                                        let _ = error(None, Box::new(er));
-                                        break;
-                                    }
-                                },
-                                Err(er) => {
-                                    let error = error_input.lock().await;
-                                    let stop = error(None, error::Error::IOError(er).into());
-                                    if stop {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-            }
-            drop(tx);
-            while let Some((index,  addr, data)) = rx.recv().await {
-                let udp_content = self.udp_contexts.get(index).unwrap();
-                let peer = udp_content.peers.borrow_mut().entry(addr).or_insert_with(|| {
-                    Arc::new(Peer {
-                        socket_id: index,
-                        addr,
-                        token: Arc::new(Mutex::new(TokenStore(None))),
-                        udp_sock: udp_content.send.get_tx()
-                    })
-                }).clone();
-
-                let res = input(self.inner.clone(), peer.clone(), data).await;
-                if let Err(er) = res {
-                    let error = err_input.lock().await;
-                    let stop = error(None, er);
-                    if stop {
-                        break;
-                    }
-                }
-            }
-
-            Ok(())
-        } else {
-            panic!("not found input")
-        }
-    }
+#[cfg(target_os = "windows")]
+fn get_cpu_count() -> usize {
+    1
 }

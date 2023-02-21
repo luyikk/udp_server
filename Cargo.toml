@@ -1,6 +1,6 @@
 [package]
 name = "udp_server"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["luyi <luyikk@126.com>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -14,4 +14,12 @@ description = "fast udp server frame."
 tokio = { version = "1", features = ["full"] }
 net2 = "0.2"
 num_cpus="1.8"
-futures="0.3"
+aqueue = "1"
+log = "0.4"
+async-trait = "0.1"
+async-lock = "2.5"
+
+[dev-dependencies]
+anyhow = "1"
+env_logger = "0.10"
+clap = { version = "4", features = ["derive"] }
