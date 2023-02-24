@@ -88,7 +88,7 @@ impl IUdpPeer for Actor<UdpPeer> {
         unsafe {
             if let Err(err) = self.deref_inner().sender.send(Err(io::Error::new(
                 ErrorKind::TimedOut,
-                "udp peer is timeout",
+                "udp peer need close",
             ))) {
                 log::error!("send timeout to udp peer:{} error:{err}", self.get_addr());
             }
