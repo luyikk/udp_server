@@ -138,7 +138,7 @@ where
                             }
                         }
                         Err(err) => {
-                            log::error!("udp:{index} recv_from error:{err}");
+                            log::trace!("udp:{index} recv_from error:{err}");
                         }
                     }
                 }
