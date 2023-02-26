@@ -68,7 +68,7 @@ where
     /// set how long the packet is not obtained and close the udp peer
     #[inline]
     pub fn set_peer_timeout_sec(mut self, sec: u64) -> UdpServer<I, T> {
-        assert!(sec>0);
+        assert!(sec > 0);
         self.clean_sec = Some(sec);
         self
     }
