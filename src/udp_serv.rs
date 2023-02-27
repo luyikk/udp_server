@@ -259,4 +259,3 @@ fn get_cpu_count() -> usize {
 fn get_cpu_count() -> usize {
     1
 }
-
