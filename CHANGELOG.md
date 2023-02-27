@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+#### Features
+* use atomic and RwLock
+
 ## 1.0.1
 #### Features
 * Revise udp socket recv_from err log level to trace level.  

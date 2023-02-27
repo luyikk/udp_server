@@ -1,4 +1,4 @@
-use async_lock::Mutex;
+use async_lock::RwLock;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::error::Error;
@@ -23,7 +23,7 @@ pub const BUFF_MAX_SIZE: usize = 4096;
 pub struct UdpContext {
     pub id: usize,
     recv: Arc<UdpSocket>,
-    pub peers: Mutex<HashMap<SocketAddr, UDPPeer>>,
+    pub peers: RwLock<HashMap<SocketAddr, UDPPeer>>,
 }
 
 unsafe impl Send for UdpContext {}
@@ -84,7 +84,7 @@ where
                     loop {
                         let current = chrono::Utc::now().timestamp();
                         for context in contexts.iter() {
-                            context.peers.lock().await.values().for_each(|peer| {
+                            context.peers.read().await.values().for_each(|peer| {
                                 if current - peer.get_last_recv_sec() > clean_sec {
                                     peer.close();
                                 }
@@ -112,7 +112,7 @@ where
                             let peer = {
                                 udp_context
                                     .peers
-                                    .lock()
+                                    .write()
                                     .await
                                     .entry(addr)
                                     .or_insert_with(|| {
@@ -161,7 +161,7 @@ where
                 if let Err(err) = (input_fn)(peer, reader, inner).await {
                     log::error!("udp input error:{err}")
                 }
-                context.peers.lock().await.remove(&addr);
+                context.peers.write().await.remove(&addr);
             });
         }
         Ok(())
