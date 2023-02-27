@@ -56,6 +56,7 @@ async fn run(addr: &str, time: u64) -> anyhow::Result<()> {
             match reader.recv(&mut recv_buf[..]).await {
                 Ok(size) => {
                     INC.fetch_add(1, Ordering::Release);
+                    assert_eq!(&recv_buf[..size],b"hello!");
                     reader.send(&recv_buf[..size]).await.unwrap();
                 }
                 Err(err) => {

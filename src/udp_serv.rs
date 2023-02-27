@@ -9,7 +9,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::peer::{IUdpPeer, IUdpPeerPushData, UDPPeer, UdpPeer, UdpReader};
+use crate::peer::{UDPPeer, UdpPeer, UdpReader};
 use net2::{UdpBuilder, UdpSocketExt};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
@@ -78,12 +78,14 @@ where
     pub async fn start(&self, inner: T) -> io::Result<()> {
         let need_check_timeout = {
             if let Some(clean_sec) = self.clean_sec {
+                let clean_sec = clean_sec as i64;
                 let contexts = self.udp_contexts.clone();
                 tokio::spawn(async move {
                     loop {
+                        let current = chrono::Utc::now().timestamp();
                         for context in contexts.iter() {
                             context.peers.lock().await.values().for_each(|peer| {
-                                if peer.get_last_recv_sec() > clean_sec {
+                                if current - peer.get_last_recv_sec() > clean_sec {
                                     peer.close();
                                 }
                             });
@@ -257,3 +259,4 @@ fn get_cpu_count() -> usize {
 fn get_cpu_count() -> usize {
     1
 }
+

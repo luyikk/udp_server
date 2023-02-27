@@ -14,10 +14,10 @@ description = "fast udp server frame."
 tokio = { version = "1", features = ["full"] }
 net2 = "0.2"
 num_cpus="1.8"
-aqueue = "1"
 log = "0.4"
 async-trait = "0.1"
 async-lock = "2.5"
+chrono = "0.4"
 
 [dev-dependencies]
 anyhow = "1"
