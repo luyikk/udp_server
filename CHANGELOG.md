@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+#### Features
+* use Mutex because RwLock doesn't mean much.
+
 ## 1.0.2
 #### Features
 * use atomic and RwLock
