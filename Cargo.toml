@@ -1,6 +1,6 @@
 [package]
 name = "udp_server"
-version = "1.0.3"
+version = "1.0.4"
 authors = ["luyi <luyikk@126.com>"]
 edition = "2018"
 license = "MIT/Apache-2.0"
@@ -15,8 +15,7 @@ tokio = { version = "1", features = ["full"] }
 net2 = "0.2"
 num_cpus="1.8"
 log = "0.4"
-async-trait = "0.1"
-async-lock = "2.5"
+async-lock = "3.3"
 chrono = "0.4"
 
 [dev-dependencies]

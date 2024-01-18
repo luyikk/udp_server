@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+#### Features
+* update async-lock to 3.3
+
 ## 1.0.3
 #### Features
 * use Mutex because RwLock doesn't mean much.
