@@ -10,41 +10,95 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::peer::{UDPPeer, UdpPeer, UdpReader};
-use net2::{UdpBuilder, UdpSocketExt};
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
 
-///The maximum size of a single UDP packet is 4096 by default. The MTU is generally not more than 1500 on the Internet
-///If the LAN is likely to be larger, 4096 is generally enough
+/// Default maximum UDP payload size in bytes.
+///
+/// MTU is typically ≤1500 on the internet; 4096 covers Ethernet jumbo frames
+/// on LANs without being excessively large.
 pub const BUFF_MAX_SIZE: usize = 4096;
 
-/// UDP Context
-/// each bind will create a
+/// Per-socket context, created once for each listening UDP socket.
+///
+/// Each context runs its own `recv_from` loop in a dedicated Tokio task. The
+/// `peers` map is keyed by [`SocketAddr`] so the first packet from an address
+/// creates a new peer, and subsequent packets reuse it.
 pub struct UdpContext {
+    /// Monotonically increasing index assigned at startup (0, 1, …).
     pub id: usize,
+    /// The Tokio UDP socket used for both receiving and replying to peers on
+    /// this context.
     recv: Arc<UdpSocket>,
+    /// Map of all currently active peers on this socket. Locked with
+    /// `async_lock::Mutex` because both the recv loop and the peer-removal
+    /// path (inside the handler spawn) need access.
     pub peers: Mutex<HashMap<SocketAddr, UDPPeer>>,
 }
 
+// The Arc<UdpSocket> inside UdpContext is Send + Sync, but the raw struct
+// containing Mutex<HashMap<…>> needs explicit impls because the compiler cannot
+// auto-derive them across the Mutex indirection.
 unsafe impl Send for UdpContext {}
 unsafe impl Sync for UdpContext {}
 
-/// UDP Server listen
+/// A multi-socket UDP server.
+///
+/// ## Type Parameters
+///
+/// - `I`: the user's handler function type.
+/// - `T`: user-defined shared state, cloned for each spawned peer handler.
+///
+/// ## Usage
+///
+/// ```rust,no_run
+/// # use udp_server::prelude::UdpServer;
+/// # #[tokio::main]
+/// # async fn main() -> anyhow::Result<()> {
+/// UdpServer::new("0.0.0.0:20001", |peer, mut reader, _| async move {
+///     while let Some(Ok(data)) = reader.recv().await {
+///         peer.send(&data).await?;
+///     }
+///     Ok(())
+/// })?
+/// .set_peer_timeout_sec(30)
+/// .start(())
+/// .await?;
+/// # Ok(())
+/// # }
+/// ```
 pub struct UdpServer<I, T> {
+    /// One context per listening socket. Each context runs an independent
+    /// recv loop.
     udp_contexts: Vec<Arc<UdpContext>>,
+    /// The user-supplied handler closure, wrapped in Arc so it can be shared
+    /// across all spawned peer tasks.
     input: Arc<I>,
+    /// Binds T into the struct type without actually storing a value.
     _ph: PhantomData<T>,
+    /// Peer idle timeout in seconds. `None` means peers never expire.
     clean_sec: Option<u64>,
 }
 
 impl<I, R, T> UdpServer<I, T>
 where
+    // The handler: `Fn(UDPPeer, UdpReader, T) -> Future<Result<(), Box<dyn Error>>>`
     I: Fn(UDPPeer, UdpReader, T) -> R + Send + Sync + 'static,
     R: Future<Output = Result<(), Box<dyn Error>>> + Send + 'static,
+    // Shared state: must be clonable for each peer task, and thread-safe.
     T: Sync + Send + Clone + 'static,
 {
-    /// new udp server
+    /// Create a new [`UdpServer`] bound to `addr`.
+    ///
+    /// Internally creates one socket per CPU core (Unix) or one socket
+    /// (Windows) and wraps each in a [`UdpContext`].
+    ///
+    /// `input` is the handler closure invoked for every new peer.
     pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
+        // Create N UDP sockets bound to the same address (N = num_cpus on
+        // Unix, 1 on Windows). Each socket gets its own UdpContext and
+        // dedicated recv task.
         let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
         let udp_contexts = udp_list
             .into_iter()
@@ -65,17 +119,42 @@ where
         })
     }
 
-    /// set how long the packet is not obtained and close the udp peer
+    /// Set the peer idle timeout in seconds.
+    ///
+    /// When set, a background task runs every second and closes any peer whose
+    /// last received packet is older than `sec`. The peer's channel receives
+    /// `Err(io::ErrorKind::TimedOut)`, which the handler should treat as a
+    /// signal to exit.
+    ///
+    /// ## Panics
+    ///
+    /// Panics if `sec == 0`.
     #[inline]
     pub fn set_peer_timeout_sec(mut self, sec: u64) -> UdpServer<I, T> {
-        assert!(sec > 0);
+        assert!(sec > 0, "timeout must be greater than 0");
         self.clean_sec = Some(sec);
         self
     }
 
-    /// start server
+    /// Start the server and block until it shuts down.
+    ///
+    /// This method:
+    ///
+    /// 1. Optionally spawns a timeout-checker task (if `set_peer_timeout_sec`
+    ///    was called).
+    /// 2. Spawns one recv-loop task per socket context.
+    /// 3. Runs a dispatch loop on the main task: for each new peer, the user's
+    ///    handler is spawned as a new Tokio task with a clone of `inner`.
+    ///
+    /// The server shuts down when all sender halves are dropped (which happens
+    /// when the `UdpServer` itself is dropped), causing the dispatch channel
+    /// to close.
     #[inline]
     pub async fn start(&self, inner: T) -> io::Result<()> {
+        // ---- Timeout checker ----
+        // Only spawn if the user configured a timeout. The task runs a 1 Hz
+        // scan over every peer in every context, closing those whose
+        // last_read_time exceeds the threshold.
         let need_check_timeout = {
             if let Some(clean_sec) = self.clean_sec {
                 let clean_sec = clean_sec as i64;
@@ -99,6 +178,10 @@ where
             }
         };
 
+        // ---- Recv loops ----
+        // One task per socket context. Each task loops on recv_from,
+        // dispatches data to the appropriate peer, and notifies the main
+        // dispatch loop about new peers via `tx`.
         let (tx, mut rx) = unbounded_channel();
         for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
             let create_peer_tx = tx.clone();
@@ -110,6 +193,11 @@ where
                     match udp_context.recv.recv_from(&mut buff).await {
                         Ok((size, addr)) => {
                             let peer = {
+                                // Look up or insert the peer in the context's
+                                // peer map. New peers get a (peer, reader)
+                                // pair sent to the dispatch loop via
+                                // create_peer_tx so the user's handler can be
+                                // spawned.
                                 udp_context
                                     .peers
                                     .lock()
@@ -122,6 +210,8 @@ where
                                         if let Err(err) =
                                             create_peer_tx.send((peer.clone(), reader, index, addr))
                                         {
+                                            // The rx half was dropped — the
+                                            // server is shutting down.
                                             panic!("create_peer_tx err:{}", err);
                                         }
                                         peer
@@ -129,6 +219,9 @@ where
                                     .clone()
                             };
 
+                            // Push the received bytes into the peer's channel.
+                            // Two variants: with or without timestamp update,
+                            // depending on whether timeout tracking is enabled.
                             if need_check_timeout {
                                 if let Err(err) = peer
                                     .push_data_and_update_instant(buff[..size].to_vec())
@@ -141,14 +234,22 @@ where
                             }
                         }
                         Err(err) => {
+                            // recv_from errors are typically transient
+                            // (e.g. EWOULDBLOCK), log at trace to avoid noise.
                             log::trace!("udp:{index} recv_from error:{err}");
                         }
                     }
                 }
             });
         }
+        // Drop the original sender so the channel closes when all recv-loop
+        // senders are dropped (which happens on server shutdown).
         drop(tx);
 
+        // ---- Dispatch loop ----
+        // Runs on the main task. Each new peer arrives as a tuple from a recv
+        // task; we spawn the user's handler in a new Tokio task, remove the
+        // peer from the context map when the handler exits.
         while let Some((peer, reader, index, addr)) = rx.recv().await {
             let inner = inner.clone();
             let input_fn = self.input.clone();
@@ -161,6 +262,8 @@ where
                 if let Err(err) = (input_fn)(peer, reader, inner).await {
                     log::error!("udp input error:{err}")
                 }
+                // Handler finished — remove the peer from the map so a future
+                // packet from this address will create a fresh peer.
                 context.peers.lock().await.remove(&addr);
             });
         }
@@ -168,39 +271,18 @@ where
     }
 }
 
-///Create udp socket for windows
-#[cfg(target_os = "windows")]
-fn make_udp_client(addr: SocketAddr) -> io::Result<std::net::UdpSocket> {
-    if addr.is_ipv4() {
-        Ok(UdpBuilder::new_v4()?.reuse_address(true)?.bind(addr)?)
-    } else if addr.is_ipv6() {
-        Ok(UdpBuilder::new_v6()?.reuse_address(true)?.bind(addr)?)
-    } else {
-        Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"))
-    }
-}
+// ---------------------------------------------------------------------------
+// Socket creation with socket2
+// ---------------------------------------------------------------------------
 
-///It is used to create udp sockets for non-windows. The difference from windows is that reuse_port
-#[cfg(not(target_os = "windows"))]
-fn make_udp_client(addr: SocketAddr) -> io::Result<std::net::UdpSocket> {
-    use net2::unix::UnixUdpBuilderExt;
-    if addr.is_ipv4() {
-        Ok(UdpBuilder::new_v4()?
-            .reuse_address(true)?
-            .reuse_port(true)?
-            .bind(addr)?)
-    } else if addr.is_ipv6() {
-        Ok(UdpBuilder::new_v6()?
-            .reuse_address(true)?
-            .reuse_port(true)?
-            .bind(addr)?)
-    } else {
-        Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"))
-    }
-}
-
-///Create a udp socket and set the buffer size
+/// Create and configure a UDP socket bound to `addr`.
+///
+/// Sets `SO_REUSEADDR` on all platforms. On Unix, also sets `SO_REUSEPORT` so
+/// the kernel distributes packets across multiple sockets bound to the same port.
+///
+/// Socket send/recv buffers are sized at ~17.8 MB for high-throughput workloads.
 fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
+    // Resolve the address, ensuring exactly one result.
     let addr = {
         let mut addrs = addr.to_socket_addrs()?;
         let addr = match addrs.next() {
@@ -220,14 +302,38 @@ fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSock
                 "more than one address resolved",
             ))
         }
+    }?;
+
+    // Create the socket with the appropriate domain.
+    let domain = if addr.is_ipv4() {
+        Domain::IPV4
+    } else if addr.is_ipv6() {
+        Domain::IPV6
+    } else {
+        return Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"));
     };
-    let res = make_udp_client(addr?)?;
-    res.set_send_buffer_size(1784 * 10000)?;
-    res.set_recv_buffer_size(1784 * 10000)?;
-    Ok(res)
+
+    let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+
+    // SO_REUSEPORT allows binding multiple sockets to the same port; the kernel
+    // load-balances incoming packets across them. Only available on Unix.
+    #[cfg(not(target_os = "windows"))]
+    socket.set_reuse_port(true)?;
+
+    socket.bind(&addr.into())?;
+
+    // Large buffers reduce drops under burst load (~17.8 MB each).
+    socket.set_send_buffer_size(1784 * 10000)?;
+    socket.set_recv_buffer_size(1784 * 10000)?;
+
+    Ok(socket.into())
 }
 
-/// From std socket create tokio udp socket
+/// Convert a std UDP socket into a Tokio [`UdpSocket`].
+///
+/// The socket is set to non-blocking mode before conversion, as required by
+/// Tokio's [`UdpSocket::try_from`].
 fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<UdpSocket> {
     let std_sock = create_udp_socket(&addr)?;
     std_sock.set_nonblocking(true)?;
@@ -235,8 +341,10 @@ fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<UdpSocket> 
     Ok(sock)
 }
 
-/// create tokio UDP socket list
-/// listen_count indicates how many UDP SOCKETS to listen
+/// Create `listen_count` Tokio UDP sockets all bound to the same address.
+///
+/// Each socket gets its own `UdpContext` and dedicated recv task at runtime,
+/// enabling kernel-level load distribution when `listen_count > 1`.
 fn create_udp_socket_list<A: ToSocketAddrs>(
     addr: &A,
     listen_count: usize,
@@ -250,6 +358,13 @@ fn create_udp_socket_list<A: ToSocketAddrs>(
     Ok(listens)
 }
 
+/// Return the number of UDP sockets to create.
+///
+/// On Unix: equal to the number of logical CPUs, because `SO_REUSEPORT`
+/// distributes packets across all bound sockets.
+///
+/// On Windows: always 1, because `SO_REUSEPORT` is not available and multiple
+/// sockets bound to the same port would conflict.
 #[cfg(not(target_os = "windows"))]
 fn get_cpu_count() -> usize {
     num_cpus::get()
