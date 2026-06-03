@@ -1,5 +1,4 @@
-use async_lock::Mutex;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::convert::TryFrom;
 use std::error::Error;
 use std::future::Future;
@@ -10,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::peer::{UDPPeer, UdpPeer, UdpReader};
+use bytes::BytesMut;
 use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc::unbounded_channel;
@@ -31,17 +31,11 @@ pub struct UdpContext {
     /// The Tokio UDP socket used for both receiving and replying to peers on
     /// this context.
     recv: Arc<UdpSocket>,
-    /// Map of all currently active peers on this socket. Locked with
-    /// `async_lock::Mutex` because both the recv loop and the peer-removal
-    /// path (inside the handler spawn) need access.
-    pub peers: Mutex<HashMap<SocketAddr, UDPPeer>>,
+    /// Map of all currently active peers on this socket. Uses [`DashMap`] for
+    /// lock-free concurrent access — the recv loop does lookups/inserts and the
+    /// handler cleanup does removes without blocking each other.
+    pub peers: DashMap<SocketAddr, UDPPeer>,
 }
-
-// The Arc<UdpSocket> inside UdpContext is Send + Sync, but the raw struct
-// containing Mutex<HashMap<…>> needs explicit impls because the compiler cannot
-// auto-derive them across the Mutex indirection.
-unsafe impl Send for UdpContext {}
-unsafe impl Sync for UdpContext {}
 
 /// A multi-socket UDP server.
 ///
@@ -163,7 +157,12 @@ where
                     loop {
                         let current = chrono::Utc::now().timestamp();
                         for context in contexts.iter() {
-                            context.peers.lock().await.values().for_each(|peer| {
+                            // DashMap::iter yields RefMulti entries; each holds a
+                            // per-shard read lock. close() sends to an
+                            // UnboundedSender (synchronous, fast), so it's safe
+                            // to call while holding the shard lock.
+                            context.peers.iter().for_each(|entry| {
+                                let peer = entry.value();
                                 if current - peer.get_last_recv_sec() > clean_sec {
                                     peer.close();
                                 }
@@ -188,20 +187,24 @@ where
             let udp_context = udp_listen.clone();
             tokio::spawn(async move {
                 log::debug!("start udp listen:{index}");
-                let mut buff = [0; BUFF_MAX_SIZE];
+                // BytesMut is a heap-allocated buffer that can be split and
+                // frozen into reference-counted Bytes without copying data.
+                let mut buf = BytesMut::zeroed(BUFF_MAX_SIZE);
                 loop {
-                    match udp_context.recv.recv_from(&mut buff).await {
+                    match udp_context.recv.recv_from(&mut buf).await {
                         Ok((size, addr)) => {
+                            // Zero-copy: split_to returns a BytesMut holding
+                            // the first `size` bytes, freeze() converts it to
+                            // an immutable Bytes with refcount=1. No memcpy.
+                            let data = buf.split_to(size).freeze();
+                            // Allocate a fresh buffer for the next recv.
+                            buf = BytesMut::zeroed(BUFF_MAX_SIZE);
                             let peer = {
-                                // Look up or insert the peer in the context's
-                                // peer map. New peers get a (peer, reader)
-                                // pair sent to the dispatch loop via
-                                // create_peer_tx so the user's handler can be
-                                // spawned.
+                                // DashMap::entry takes a per-shard write lock
+                                // implicitly. No .await needed — the lock is
+                                // never held across an async boundary.
                                 udp_context
                                     .peers
-                                    .lock()
-                                    .await
                                     .entry(addr)
                                     .or_insert_with(|| {
                                         let (peer, reader) =
@@ -223,13 +226,10 @@ where
                             // Two variants: with or without timestamp update,
                             // depending on whether timeout tracking is enabled.
                             if need_check_timeout {
-                                if let Err(err) = peer
-                                    .push_data_and_update_instant(buff[..size].to_vec())
-                                    .await
-                                {
+                                if let Err(err) = peer.push_data_and_update_instant(data).await {
                                     log::error!("peer push data and update instant is error:{err}");
                                 }
-                            } else if let Err(err) = peer.push_data(buff[..size].to_vec()) {
+                            } else if let Err(err) = peer.push_data(data) {
                                 log::error!("peer push data is error:{err}");
                             }
                         }
@@ -262,9 +262,9 @@ where
                 if let Err(err) = (input_fn)(peer, reader, inner).await {
                     log::error!("udp input error:{err}")
                 }
-                // Handler finished — remove the peer from the map so a future
-                // packet from this address will create a fresh peer.
-                context.peers.lock().await.remove(&addr);
+                // Handler finished — remove the peer from the DashMap so a
+                // future packet from this address will create a fresh peer.
+                context.peers.remove(&addr);
             });
         }
         Ok(())

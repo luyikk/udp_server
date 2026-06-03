@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
@@ -14,16 +15,22 @@ pub type UDPPeer = Arc<UdpPeer>;
 
 /// Transmit end of a peer's data channel.
 ///
-/// The socket receive loop pushes received bytes into this sender; the user
+/// The socket receive loop pushes received [`Bytes`] into this sender; the user
 /// handler reads them from the paired [`UdpReader`].
-pub type UdpSender = UnboundedSender<io::Result<Vec<u8>>>;
+///
+/// Uses [`Bytes`] instead of `Vec<u8>` for zero-copy sharing — the buffer is
+/// reference-counted, so passing it through the channel does not copy the data.
+pub type UdpSender = UnboundedSender<io::Result<Bytes>>;
 
 /// Receive end of a peer's data channel.
 ///
-/// The user handler calls `reader.recv().await` to consume incoming packets.
-/// When the peer is evicted by the timeout checker, the next `recv()` returns
-/// `Some(Err(io::ErrorKind::TimedOut))`.
-pub type UdpReader = UnboundedReceiver<io::Result<Vec<u8>>>;
+/// The user handler calls `reader.recv().await` to consume incoming packets as
+/// [`Bytes`]. When the peer is evicted by the timeout checker, the next
+/// `recv()` returns `Some(Err(io::ErrorKind::TimedOut))`.
+///
+/// [`Bytes`] derefs to `&[u8]`, so handlers using `peer.send(&data)` work
+/// unchanged.
+pub type UdpReader = UnboundedReceiver<io::Result<Bytes>>;
 
 /// A single remote UDP client, keyed by its [`SocketAddr`].
 ///
@@ -103,9 +110,12 @@ impl UdpPeer {
     ///
     /// Used when peer timeout is disabled — the timestamp is irrelevant, so we
     /// skip the atomic store for a slight performance gain.
+    ///
+    /// The [`Bytes`] is moved into the channel with zero copy (reference count
+    /// bump only).
     #[inline]
-    pub(crate) fn push_data(&self, buf: Vec<u8>) -> io::Result<()> {
-        if let Err(err) = self.sender.send(Ok(buf)) {
+    pub(crate) fn push_data(&self, data: Bytes) -> io::Result<()> {
+        if let Err(err) = self.sender.send(Ok(data)) {
             Err(io::Error::new(ErrorKind::Other, err))
         } else {
             Ok(())
@@ -118,10 +128,10 @@ impl UdpPeer {
     /// `Ordering::Release` to pair with the `Acquire` load in
     /// [`get_last_recv_sec`].
     #[inline]
-    pub(crate) async fn push_data_and_update_instant(&self, buf: Vec<u8>) -> io::Result<()> {
+    pub(crate) async fn push_data_and_update_instant(&self, data: Bytes) -> io::Result<()> {
         self.last_read_time
             .store(timestamp_sec(), Ordering::Release);
-        self.push_data(buf)
+        self.push_data(data)
     }
 
     /// Return the index of the socket this peer belongs to.
@@ -139,7 +149,8 @@ impl UdpPeer {
     /// Send a buffer to the remote peer via the shared UDP socket.
     ///
     /// This is the primary method the user's handler calls to reply to the
-    /// client.
+    /// client. Accepts `&[u8]` so it works with both `Bytes` (via `Deref`) and
+    /// plain byte slices.
     #[inline]
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
         self.udp_sock.send_to(buf, &self.addr).await
