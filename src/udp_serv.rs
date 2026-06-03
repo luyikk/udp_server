@@ -20,6 +20,10 @@ use tokio::sync::mpsc::unbounded_channel;
 /// on LANs without being excessively large.
 pub const BUFF_MAX_SIZE: usize = 4096;
 
+/// Default send/recv socket buffer size (~17.8 MB). Large enough for
+/// high-throughput burst scenarios without OS-level packet drops.
+pub const DEFAULT_BUF_SIZE: usize = 1784 * 10000;
+
 /// Per-socket context, created once for each listening UDP socket.
 ///
 /// Each context runs its own `recv_from` loop in a dedicated Tokio task. The
@@ -27,6 +31,7 @@ pub const BUFF_MAX_SIZE: usize = 4096;
 /// creates a new peer, and subsequent packets reuse it.
 pub struct UdpContext {
     /// Monotonically increasing index assigned at startup (0, 1, …).
+    #[allow(dead_code)]
     pub id: usize,
     /// The Tokio UDP socket used for both receiving and replying to peers on
     /// this context.
@@ -63,9 +68,10 @@ pub struct UdpContext {
 /// # }
 /// ```
 pub struct UdpServer<I, T> {
-    /// One context per listening socket. Each context runs an independent
-    /// recv loop.
-    udp_contexts: Vec<Arc<UdpContext>>,
+    /// Resolved listen address. Sockets are bound to this address in
+    /// [`start`](Self::start) so that builder methods like
+    /// [`set_buffer_size`](Self::set_buffer_size) take effect.
+    addr: SocketAddr,
     /// The user-supplied handler closure, wrapped in Arc so it can be shared
     /// across all spawned peer tasks.
     input: Arc<I>,
@@ -73,6 +79,9 @@ pub struct UdpServer<I, T> {
     _ph: PhantomData<T>,
     /// Peer idle timeout in seconds. `None` means peers never expire.
     clean_sec: Option<u64>,
+    /// Send/recv socket buffer size in bytes. Passed through to each listening
+    /// socket. Defaults to [`DEFAULT_BUF_SIZE`] (~17.8 MB).
+    buf_size: usize,
 }
 
 impl<I, R, T> UdpServer<I, T>
@@ -83,34 +92,39 @@ where
     // Shared state: must be clonable for each peer task, and thread-safe.
     T: Sync + Send + Clone + 'static,
 {
-    /// Create a new [`UdpServer`] bound to `addr`.
+    /// Create a new [`UdpServer`] that will bind to `addr`.
     ///
-    /// Internally creates one socket per CPU core (Unix) or one socket
-    /// (Windows) and wraps each in a [`UdpContext`].
+    /// The address is resolved immediately but sockets are created in
+    /// [`start`](Self::start) so that builder methods like
+    /// [`set_buffer_size`](Self::set_buffer_size) and
+    /// [`set_peer_timeout_sec`](Self::set_peer_timeout_sec) take effect.
     ///
     /// `input` is the handler closure invoked for every new peer.
     pub fn new<A: ToSocketAddrs>(addr: A, input: I) -> io::Result<Self> {
-        // Create N UDP sockets bound to the same address (N = num_cpus on
-        // Unix, 1 on Windows). Each socket gets its own UdpContext and
-        // dedicated recv task.
-        let udp_list = create_udp_socket_list(&addr, get_cpu_count())?;
-        let udp_contexts = udp_list
-            .into_iter()
-            .enumerate()
-            .map(|(id, socket)| {
-                Arc::new(UdpContext {
-                    id,
-                    recv: Arc::new(socket),
-                    peers: Default::default(),
-                })
-            })
-            .collect();
+        let addr = resolve_single_addr(&addr)?;
         Ok(UdpServer {
-            udp_contexts,
+            addr,
             input: Arc::new(input),
             _ph: Default::default(),
             clean_sec: None,
+            buf_size: DEFAULT_BUF_SIZE,
         })
+    }
+
+    /// Set the send/recv socket buffer size in bytes.
+    ///
+    /// Tuning this can help with bursty workloads — larger buffers reduce OS
+    /// drops at the cost of kernel memory. Default is [`DEFAULT_BUF_SIZE`]
+    /// (~17.8 MB). Set before calling [`start`](Self::start).
+    ///
+    /// ## Panics
+    ///
+    /// Panics if `size == 0`.
+    #[inline]
+    pub fn set_buffer_size(mut self, size: usize) -> UdpServer<I, T> {
+        assert!(size > 0, "buffer size must be greater than 0");
+        self.buf_size = size;
+        self
     }
 
     /// Set the peer idle timeout in seconds.
@@ -145,6 +159,20 @@ where
     /// to close.
     #[inline]
     pub async fn start(&self, inner: T) -> io::Result<()> {
+        // ---- Create sockets (deferred from new) ----
+        let udp_list = create_udp_socket_list(&self.addr, get_cpu_count(), self.buf_size)?;
+        let udp_contexts: Vec<Arc<UdpContext>> = udp_list
+            .into_iter()
+            .enumerate()
+            .map(|(id, socket)| {
+                Arc::new(UdpContext {
+                    id,
+                    recv: Arc::new(socket),
+                    peers: Default::default(),
+                })
+            })
+            .collect();
+
         // ---- Timeout checker ----
         // Only spawn if the user configured a timeout. The task runs a 1 Hz
         // scan over every peer in every context, closing those whose
@@ -152,7 +180,7 @@ where
         let need_check_timeout = {
             if let Some(clean_sec) = self.clean_sec {
                 let clean_sec = clean_sec as i64;
-                let contexts = self.udp_contexts.clone();
+                let contexts = udp_contexts.clone();
                 tokio::spawn(async move {
                     loop {
                         let current = chrono::Utc::now().timestamp();
@@ -182,7 +210,7 @@ where
         // dispatches data to the appropriate peer, and notifies the main
         // dispatch loop about new peers via `tx`.
         let (tx, mut rx) = unbounded_channel();
-        for (index, udp_listen) in self.udp_contexts.iter().enumerate() {
+        for (index, udp_listen) in udp_contexts.iter().enumerate() {
             let create_peer_tx = tx.clone();
             let udp_context = udp_listen.clone();
             tokio::spawn(async move {
@@ -253,11 +281,7 @@ where
         while let Some((peer, reader, index, addr)) = rx.recv().await {
             let inner = inner.clone();
             let input_fn = self.input.clone();
-            let context = self
-                .udp_contexts
-                .get(index)
-                .expect("not found context")
-                .clone();
+            let context = udp_contexts.get(index).expect("not found context").clone();
             tokio::spawn(async move {
                 if let Err(err) = (input_fn)(peer, reader, inner).await {
                     log::error!("udp input error:{err}")
@@ -275,42 +299,33 @@ where
 // Socket creation with socket2
 // ---------------------------------------------------------------------------
 
+/// Resolve `addr` to exactly one [`SocketAddr`].
+fn resolve_single_addr<A: ToSocketAddrs>(addr: &A) -> io::Result<SocketAddr> {
+    let mut addrs = addr.to_socket_addrs()?;
+    let addr = match addrs.next() {
+        Some(addr) => addr,
+        None => return Err(io::Error::other("no socket addresses could be resolved")),
+    };
+    if addrs.next().is_some() {
+        return Err(io::Error::other("more than one address resolved"));
+    }
+    Ok(addr)
+}
+
 /// Create and configure a UDP socket bound to `addr`.
 ///
 /// Sets `SO_REUSEADDR` on all platforms. On Unix, also sets `SO_REUSEPORT` so
 /// the kernel distributes packets across multiple sockets bound to the same port.
 ///
-/// Socket send/recv buffers are sized at ~17.8 MB for high-throughput workloads.
-fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSocket> {
-    // Resolve the address, ensuring exactly one result.
-    let addr = {
-        let mut addrs = addr.to_socket_addrs()?;
-        let addr = match addrs.next() {
-            Some(addr) => addr,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "no socket addresses could be resolved",
-                ))
-            }
-        };
-        if addrs.next().is_none() {
-            Ok(addr)
-        } else {
-            Err(io::Error::new(
-                io::ErrorKind::Other,
-                "more than one address resolved",
-            ))
-        }
-    }?;
-
+/// Socket send/recv buffers are sized per the `buf_size` parameter.
+fn create_udp_socket(addr: &SocketAddr, buf_size: usize) -> io::Result<std::net::UdpSocket> {
     // Create the socket with the appropriate domain.
     let domain = if addr.is_ipv4() {
         Domain::IPV4
     } else if addr.is_ipv6() {
         Domain::IPV6
     } else {
-        return Err(io::Error::new(io::ErrorKind::Other, "not address AF_INET"));
+        return Err(io::Error::other("not address AF_INET"));
     };
 
     let socket = Socket::new(domain, Type::DGRAM, Some(Protocol::UDP))?;
@@ -321,11 +336,11 @@ fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSock
     #[cfg(not(target_os = "windows"))]
     socket.set_reuse_port(true)?;
 
-    socket.bind(&addr.into())?;
+    socket.bind(&(*addr).into())?;
 
-    // Large buffers reduce drops under burst load (~17.8 MB each).
-    socket.set_send_buffer_size(1784 * 10000)?;
-    socket.set_recv_buffer_size(1784 * 10000)?;
+    // Socket buffers sized per user configuration.
+    socket.set_send_buffer_size(buf_size)?;
+    socket.set_recv_buffer_size(buf_size)?;
 
     Ok(socket.into())
 }
@@ -334,8 +349,8 @@ fn create_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<std::net::UdpSock
 ///
 /// The socket is set to non-blocking mode before conversion, as required by
 /// Tokio's [`UdpSocket::try_from`].
-fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<UdpSocket> {
-    let std_sock = create_udp_socket(&addr)?;
+fn create_async_udp_socket(addr: &SocketAddr, buf_size: usize) -> io::Result<UdpSocket> {
+    let std_sock = create_udp_socket(addr, buf_size)?;
     std_sock.set_nonblocking(true)?;
     let sock = UdpSocket::try_from(std_sock)?;
     Ok(sock)
@@ -345,14 +360,15 @@ fn create_async_udp_socket<A: ToSocketAddrs>(addr: &A) -> io::Result<UdpSocket> 
 ///
 /// Each socket gets its own `UdpContext` and dedicated recv task at runtime,
 /// enabling kernel-level load distribution when `listen_count > 1`.
-fn create_udp_socket_list<A: ToSocketAddrs>(
-    addr: &A,
+fn create_udp_socket_list(
+    addr: &SocketAddr,
     listen_count: usize,
+    buf_size: usize,
 ) -> io::Result<Vec<UdpSocket>> {
     log::debug!("cpus:{listen_count}");
     let mut listens = Vec::with_capacity(listen_count);
     for _ in 0..listen_count {
-        let sock = create_async_udp_socket(addr)?;
+        let sock = create_async_udp_socket(addr, buf_size)?;
         listens.push(sock);
     }
     Ok(listens)

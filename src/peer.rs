@@ -116,7 +116,7 @@ impl UdpPeer {
     #[inline]
     pub(crate) fn push_data(&self, data: Bytes) -> io::Result<()> {
         if let Err(err) = self.sender.send(Ok(data)) {
-            Err(io::Error::new(ErrorKind::Other, err))
+            Err(io::Error::other(err))
         } else {
             Ok(())
         }
